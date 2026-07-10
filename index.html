@@ -260,7 +260,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 <div id="mstack"></div>
 <div id="menu">
   <button id="m-sync">Drive sync</button>
-  <button id="m-syncoff" style="display:none">Disconnect Drive</button>
+  <button id="m-syncoff" style="display:none">Drive settings…</button>
   <button id="m-export">Export NDJSON</button>
   <button id="m-import">Import &amp; merge…</button>
   <button id="m-replace">Import &amp; replace…</button>
@@ -665,52 +665,72 @@ function adoptOrMerge(nd){
 // created), Drive REST v3 for the blob. Cycle: pull remote -> adopt or
 // merge -> push the union. Because the merge is convergent, blind
 // overwrites between devices self-heal on the next cycle; Drive needs
-// no locking. Config (client id, file id, last-seen modifiedTime) is
-// per-device in localStorage, never in the synced DB.
-// Requires an https origin registered on the OAuth client (GitHub
-// Pages); silent token refresh works while signed into Google, else
-// status becomes need-auth and the menu button prompts interactively.
+// no locking.
+// Auth rules learned the hard way:
+//  - Tokens are requested ONLY from a user tap. GIS token requests
+//    open a (possibly self-closing) popup; non-gesture attempts get
+//    popup-blocked and some failure paths never call back.
+//  - The granted token (~1h) is cached in localStorage, so page loads
+//    and background syncs within its lifetime need no GIS at all.
+//  - The token client is created fresh per request with callback AND
+//    error_callback in its config (property assignment after init is
+//    not reliably honored), wrapped in a hard timeout so the busy
+//    flag can never deadlock.
+//  - Setup is an in-app modal, not window.prompt(), which is a no-op
+//    in iOS home-screen (standalone) mode.
 const Sync={
   CFG:'capturelog.sync',
-  st:{clientId:null,fileId:null,remoteTime:null},
-  token:null, tokenExp:0, tokenClient:null, gisLoading:null,
-  status:'off', busy:false, pushTimer:null,
-  loadCfg(){ try{ const r=localStorage.getItem(this.CFG); if(r)this.st=JSON.parse(r); }catch(e){} },
+  st:{clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0},
+  gisLoading:null, status:'off', busy:false, pushTimer:null,
+  loadCfg(){ try{ const r=localStorage.getItem(this.CFG);
+    if(r)Object.assign(this.st,JSON.parse(r)); }catch(e){} },
   saveCfg(){ try{ localStorage.setItem(this.CFG,JSON.stringify(this.st)); }catch(e){} },
   configured(){ return !!this.st.clientId; },
+  tokenValid(){ return this.st.token&&Date.now()<this.st.tokenExp; },
   init(){ this.loadCfg();
-    if(this.configured()){ this.status='need-auth'; this.syncNow(false); }
-    setInterval(()=>{ if(this.configured())this.syncNow(false); },5*60*1000); },
-  loadGIS(){ if(window.google&&google.accounts) return Promise.resolve();
+    if(this.configured()){
+      this.status=this.tokenValid()?'ok':'need-auth';
+      this.loadGIS().catch(()=>{});          // background prefetch only
+      if(this.tokenValid()) this.syncNow(false);
+    }
+    setInterval(()=>{ if(this.configured()&&this.tokenValid())this.syncNow(false); },5*60*1000); },
+  loadGIS(){ if(window.google&&google.accounts&&google.accounts.oauth2) return Promise.resolve();
     if(this.gisLoading) return this.gisLoading;
     this.gisLoading=new Promise((res,rej)=>{
       const s=document.createElement('script');
       s.src='https://accounts.google.com/gsi/client';
-      s.onload=res; s.onerror=()=>rej(new Error('GIS blocked'));
+      s.onload=res; s.onerror=()=>{ this.gisLoading=null; rej(new Error('GIS blocked')); };
       document.head.appendChild(s); });
     return this.gisLoading; },
+  // interactive===false NEVER opens a popup: cached token or fail fast.
   ensureToken(interactive){
-    if(this.token&&Date.now()<this.tokenExp) return Promise.resolve();
-    return this.loadGIS().then(()=>new Promise((res,rej)=>{
-      if(!this.tokenClient)
-        this.tokenClient=google.accounts.oauth2.initTokenClient({
-          client_id:this.st.clientId,
-          scope:'https://www.googleapis.com/auth/drive.file',
-          callback:()=>{} });
-      this.tokenClient.callback=(resp)=>{
-        if(resp&&resp.access_token){
-          this.token=resp.access_token;
-          this.tokenExp=Date.now()+((resp.expires_in||3600)*1000)-60000;
-          res(); }
-        else { this.status='need-auth'; rej(new Error('no token')); } };
-      this.tokenClient.error_callback=()=>{ this.status='need-auth'; rej(new Error('auth')); };
-      // silent refresh when possible; interactive taps may show consent
-      this.tokenClient.requestAccessToken(interactive?{}:{prompt:'none'});
-    })); },
+    if(this.tokenValid()) return Promise.resolve();
+    if(!interactive){ this.status='need-auth'; return Promise.reject(new Error('need-auth')); }
+    const request=()=>new Promise((res,rej)=>{
+      let settled=false;
+      const timer=setTimeout(()=>{ if(!settled){settled=true;
+        this.status='need-auth'; rej(new Error('auth timeout')); } },45000);
+      const tc=google.accounts.oauth2.initTokenClient({
+        client_id:this.st.clientId,
+        scope:'https://www.googleapis.com/auth/drive.file',
+        callback:(resp)=>{ if(settled)return; settled=true; clearTimeout(timer);
+          if(resp&&resp.access_token){
+            this.st.token=resp.access_token;
+            this.st.tokenExp=Date.now()+((resp.expires_in||3600)*1000)-60000;
+            this.saveCfg(); this.status='ok'; res(); }
+          else { this.status='need-auth'; rej(new Error(resp&&resp.error||'no token')); } },
+        error_callback:(e)=>{ if(settled)return; settled=true; clearTimeout(timer);
+          this.status='need-auth'; rej(new Error(e&&e.type||'auth failed')); } });
+      tc.requestAccessToken({prompt:''}); });
+    // fast path keeps the user-activation window: if GIS is already
+    // loaded (init prefetches it), the popup opens in the tap's stack.
+    if(window.google&&google.accounts&&google.accounts.oauth2) return request();
+    return this.loadGIS().then(request); },
   api(url,opts={}){
-    opts.headers=Object.assign({Authorization:'Bearer '+this.token},opts.headers||{});
+    opts.headers=Object.assign({Authorization:'Bearer '+this.st.token},opts.headers||{});
     return fetch(url,opts).then(r=>{
-      if(r.status===401){ this.token=null; this.status='need-auth'; throw new Error('auth'); }
+      if(r.status===401){ this.st.token=null; this.st.tokenExp=0; this.saveCfg();
+        this.status='need-auth'; throw new Error('auth'); }
       if(!r.ok) throw new Error('drive '+r.status);
       return r; }); },
   find(){ if(this.st.fileId) return Promise.resolve();
@@ -746,25 +766,58 @@ const Sync={
       .then(r=>r.json()).then(f=>{ this.st.remoteTime=f.modifiedTime; this.saveCfg(); }); },
   syncNow(interactive){
     if(this.busy||!this.configured()) return Promise.resolve();
-    this.busy=true; const prev=this.status; this.status='syncing';
+    this.busy=true; this.status='syncing';
     return this.ensureToken(interactive)
       .then(()=>this.find())
       .then(()=>this.pull())
       .then(changed=>{ if(changed)UI.rerender(); return this.push(); })
       .then(()=>{ this.status='ok'; if(interactive)toast('Synced'); })
       .catch(()=>{ if(this.status==='syncing')this.status='error';
-        if(interactive)toast(this.status==='need-auth'?'Drive: sign-in needed — tap again':'Sync failed'); })
+        if(interactive)toast(this.status==='need-auth'
+          ?'Sign-in didn\u2019t complete — check popups, then tap again'
+          :'Sync failed — will retry'); })
       .finally(()=>{ this.busy=false; }); },
   setup(){
-    const cid=prompt('Google Drive sync setup.\n\nPaste the OAuth Client ID from your Google Cloud project\n(ends in .apps.googleusercontent.com).\nThis page\'s URL must be an authorized JavaScript origin.',
-      this.st.clientId||'');
-    if(cid&&cid.trim()){ this.st.clientId=cid.trim(); this.saveCfg(); this.syncNow(true); } },
+    Modal.push((m,body)=>{
+      body.appendChild(el('div','f-lbl','Google Drive sync'));
+      const note=el('div');
+      note.style.cssText='color:var(--muted);font-size:13px;line-height:1.5';
+      note.textContent='Paste the OAuth 2.0 Client ID from your Google Cloud project. '
+        +'It must be a “Web application” client, and this exact origin must be listed '
+        +'under Authorized JavaScript origins:';
+      body.appendChild(note);
+      const org=el('div','mono'); org.textContent=location.origin;
+      org.style.cssText='color:var(--accent);font-size:12px;margin:6px 0 2px;user-select:all';
+      body.appendChild(org);
+      body.appendChild(el('div','f-lbl','Client ID'));
+      const inp=el('input','f-title');
+      inp.placeholder='…apps.googleusercontent.com';
+      inp.value=this.st.clientId||'';
+      inp.setAttribute('autocapitalize','off'); inp.setAttribute('autocorrect','off');
+      inp.setAttribute('spellcheck','false');
+      body.appendChild(inp);
+      const err=el('div'); err.style.cssText='color:var(--danger);font-size:12px;min-height:16px;margin-top:6px';
+      body.appendChild(err);
+      const go=el('button','bigbtn go','Connect & sync');
+      go.addEventListener('click',()=>{
+        const cid=inp.value.trim();
+        if(!/\.apps\.googleusercontent\.com$/.test(cid)){
+          err.textContent='That doesn\u2019t look complete — it should end in .apps.googleusercontent.com (a truncated ID causes Google\u2019s “missing a project id” error).';
+          return; }
+        this.st.clientId=cid; this.st.token=null; this.st.tokenExp=0; this.saveCfg();
+        Modal.pop(); this.syncNow(true); });
+      body.appendChild(go);
+      if(this.configured()){
+        const off=el('button','dangerbtn','Disconnect Drive sync on this device');
+        off.addEventListener('click',()=>{ this.disconnect(); Modal.pop(); });
+        body.appendChild(off); }
+    }); },
   disconnect(){
-    this.st={clientId:null,fileId:null,remoteTime:null}; this.saveCfg();
-    this.token=null; this.status='off'; toast('Drive sync disconnected'); } };
+    this.st={clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0}; this.saveCfg();
+    this.status='off'; toast('Drive sync disconnected'); } };
 window.SyncRef=Sync;
 scheduleDriveSync=function(){           // called from saveNow(): push soon
-  if(!Sync.configured()) return;
+  if(!Sync.configured()||!Sync.tokenValid()) return;
   clearTimeout(Sync.pushTimer);
   Sync.pushTimer=setTimeout(()=>Sync.syncNow(false),15000); };
 // ==== SEC:APP/SYNC (END) ====
@@ -1483,8 +1536,7 @@ document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#m
 $('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
   if(!Sync.configured()) Sync.setup(); else Sync.syncNow(true); });
 $('#m-syncoff').addEventListener('click',()=>{ $('#menu').classList.remove('on');
-  if(confirm('Disconnect Drive sync on this device? The Drive file and local data are kept.'))
-    Sync.disconnect(); });
+  Sync.setup(); });
 $('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList.remove('on');});
 let importMode='merge';
 $('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
