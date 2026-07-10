@@ -8,17 +8,31 @@
      configuration reproducing the Phase-1 workflow.
 
      Schema (all references by persistent ID; only id/created_at
-     immutable; soft delete everywhere):
-       entries    id, created_at, ts, title, body, estimate_min, deleted
-       edges      id, from_id, to_id, type_id, created_at, deleted
+     immutable; soft delete everywhere; every record carries
+     updated_at, bumped on mutation, for last-write-wins merging):
+       IDs        globally unique strings "{deviceId}-{letter}{n}"
+                  (letter: e entry, g edge, t linktype, v view, b tab)
+                  so records created offline on different devices
+                  never collide. deviceId is per-install, stored
+                  OUTSIDE the DB and never synced.
+       entries    id, created_at, ts, updated_at, title, body,
+                  estimate_min, deleted
+       edges      id, from_id, to_id, type_id, created_at,
+                  updated_at, deleted
                   (child edge points child -> parent; ends edge
                    points end-entry -> start-entry)
-       linkTypes  id, name, locked, deleted
+       linkTypes  id, name, locked, updated_at, deleted
        views      id, name, cond_ids[] (ancestor conditions, ANDed),
-                  type_ids[] (containment link types), locked, deleted
-       tabs       id, cls, label, cfg{...}   cls ∈ create | interval |
-                  explore | exclusive | views | links | tabs
-       settings   allViewId, mem{fieldKey -> viewId}, migratedV1
+                  type_ids[] (containment link types), locked,
+                  updated_at, deleted
+       tabs       id, cls, label, pos, cfg{...}, updated_at
+                  cls ∈ create | interval | explore | exclusive |
+                  views | links | tabs
+       settings   allViewId, mem{fieldKey -> id}, migratedV1,
+                  idsMigrated, dirty (false only while the DB holds
+                  nothing but seed data; a pristine device ADOPTS
+                  incoming sync data instead of merging, so two
+                  fresh seeds never duplicate keystones)
 
      SECTION MANIFEST (grep "SEC:"; every section has (BEGIN)/(END)):
        SEC:HEADER              this manifest
@@ -37,12 +51,18 @@
        SEC:APP                 all JavaScript
          SEC:APP/UTIL            dom/date/format helpers
          SEC:APP/STORE           persistence + flush-on-hide
-         SEC:APP/MODEL           CRUD for all five tables
+         SEC:APP/IDS             device id, id factory, numeric->global
+                                 id migration for existing v2 data
+         SEC:APP/MODEL           CRUD for all five tables (+touch)
          SEC:APP/SEED            first-run seed configuration
          SEC:APP/MIGRATE         v1 -> v2 data migration
          SEC:APP/QUERY           containment, view matching, trees,
                                  paths, search, running intervals
-         SEC:APP/EXPORT          NDJSON export / import
+         SEC:APP/EXPORT          NDJSON serialize/parse/export
+         SEC:APP/MERGE           union + last-write-wins merge;
+                                 adopt-if-pristine rule
+         SEC:APP/SYNC            Google Drive sync (GIS auth,
+                                 drive.file scope, pull-merge-push)
          SEC:APP/UI              view layer
            SEC:APP/UI/ROOT         tab bar, routing, rerender
            SEC:APP/UI/RUNBAR       live running-interval summary
@@ -239,8 +259,11 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 <div id="scrim"></div>
 <div id="mstack"></div>
 <div id="menu">
+  <button id="m-sync">Drive sync</button>
+  <button id="m-syncoff" style="display:none">Disconnect Drive</button>
   <button id="m-export">Export NDJSON</button>
-  <button id="m-import">Import NDJSON…</button>
+  <button id="m-import">Import &amp; merge…</button>
+  <button id="m-replace">Import &amp; replace…</button>
   <div class="note" id="m-note"></div>
 </div>
 <input type="file" id="importfile" accept=".ndjson,.txt,.json" style="display:none">
@@ -285,13 +308,15 @@ const Store={ memoryOnly:false, _mem:null,
     catch(e){ this.memoryOnly=true; this._mem=str; }
     $('#membanner').classList.toggle('on',this.memoryOnly); } };
 
-let DB={ v:2, seq:1, eseq:1, tseq:1, vseq:1, bseq:1,
+let DB={ v:2,
   entries:[], edges:[], linkTypes:[], views:[], tabs:[],
-  settings:{ allViewId:null, mem:{}, migratedV1:false } };
+  settings:{ allViewId:null, mem:{}, migratedV1:false, idsMigrated:false, dirty:false } };
 
 let saveTimer=null;
+let scheduleDriveSync=()=>{};          // replaced by SEC:APP/SYNC once defined
 function save(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNow,120); }
-function saveNow(){ clearTimeout(saveTimer); Store.write(JSON.stringify(DB)); }
+function saveNow(){ clearTimeout(saveTimer); Store.write(JSON.stringify(DB));
+  scheduleDriveSync(); }
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) saveNow(); });
 window.addEventListener('pagehide',saveNow);
 function load(){ const raw=Store.read(STORE_KEY);
@@ -299,41 +324,107 @@ function load(){ const raw=Store.read(STORE_KEY);
   $('#membanner').classList.toggle('on',Store.memoryOnly); }
 // ==== SEC:APP/STORE (END) ====
 
+// ==== SEC:APP/IDS (BEGIN) ====
+// Globally unique IDs so multi-device merges can't collide.
+// deviceId is per-install (kept outside the DB, never synced). New ids
+// are "{dev}-{letter}{n}"; counters are derived on boot by scanning
+// this device's own ids, so they need no persistence of their own.
+function deviceId(){
+  let d=null; try{ d=localStorage.getItem('capturelog.device'); }catch(e){}
+  if(!d){ d=Math.random().toString(36).slice(2,7);
+    try{ localStorage.setItem('capturelog.device',d); }catch(e){} }
+  return d; }
+let COUNTERS={};
+function initCounters(){
+  const dev=deviceId(); COUNTERS={};
+  const scan=(arr,letter)=>{ let mx=0; const pre=dev+'-'+letter;
+    arr.forEach(r=>{ if(typeof r.id==='string'&&r.id.startsWith(pre)){
+      const n=parseInt(r.id.slice(pre.length),10); if(n>mx)mx=n; } });
+    COUNTERS[letter]=mx+1; };
+  scan(DB.entries,'e'); scan(DB.edges,'g'); scan(DB.linkTypes,'t');
+  scan(DB.views,'v'); scan(DB.tabs,'b'); }
+function newId(letter){ return deviceId()+'-'+letter+(COUNTERS[letter]++); }
+
+// One-shot migration of pre-sync v2 data: numeric ids become
+// device-prefixed strings; every reference field is rewritten via the
+// old->new maps; updated_at is backfilled; tabs get explicit pos.
+function migrateIds(){
+  const s=DB.settings;
+  if(s.idsMigrated){ return; }
+  const dev=deviceId();
+  const mk=(arr,letter)=>{ const m=new Map();
+    arr.forEach(r=>{ const nid=dev+'-'+letter+r.id; m.set(r.id,nid); r.id=nid;
+      if(!r.updated_at) r.updated_at=r.created_at||nowISO(); });
+    return m; };
+  const em=mk(DB.entries,'e'), gm=mk(DB.edges,'g'), tm=mk(DB.linkTypes,'t'),
+        vm=mk(DB.views,'v'), bm=mk(DB.tabs,'b');
+  DB.edges.forEach(d=>{ d.from_id=em.get(d.from_id)??d.from_id;
+    d.to_id=em.get(d.to_id)??d.to_id; d.type_id=tm.get(d.type_id)??d.type_id; });
+  DB.views.forEach(v=>{ v.cond_ids=(v.cond_ids||[]).map(x=>em.get(x)??x);
+    v.type_ids=(v.type_ids||[]).map(x=>tm.get(x)??x); });
+  DB.tabs.forEach((t,i)=>{ if(t.pos==null)t.pos=i+1; const c=t.cfg||{};
+    if(c.root_id!=null)c.root_id=em.get(c.root_id)??c.root_id;
+    ['link_type_id','end_type_id'].forEach(k=>{ if(c[k]!=null)c[k]=tm.get(c[k])??c[k]; });
+    ['view_id','list_view_id','swap_view_id'].forEach(k=>{ if(c[k]!=null)c[k]=vm.get(c[k])??c[k]; });
+    if(c.def&&c.def.links)c.def.links.forEach(l=>{ l.to=em.get(l.to)??l.to;
+      l.type=tm.get(l.type)??l.type; }); });
+  if(s.allViewId!=null) s.allViewId=vm.get(s.allViewId)??s.allViewId;
+  const mem={};
+  Object.entries(s.mem||{}).forEach(([k,val])=>{
+    const nk=k.replace(/^tab(\d+)\./,(_,n)=>'tab'+(bm.get(+n)??n)+'.');
+    mem[nk]=vm.get(val)??tm.get(val)??val; });
+  s.mem=mem;
+  if(DB.entries.length) s.dirty=true;      // real data present -> merges, never adopted-over
+  s.idsMigrated=true; saveNow(); }
+// ==== SEC:APP/IDS (END) ====
+
 // ==== SEC:APP/MODEL (BEGIN) ====
 // CRUD. Soft delete everywhere; id + created_at immutable (P4).
+// touch() bumps updated_at (the merge clock) and marks the DB dirty
+// (i.e. containing more than seed data). Every mutation must touch.
+function touch(r){ r.updated_at=nowISO(); DB.settings.dirty=true; }
+
 function createEntry(f={}){ const t=nowISO();
-  const e={id:DB.seq++,created_at:t,ts:t,title:null,body:null,estimate_min:null,deleted:0,...f};
-  DB.entries.push(e); save(); return e; }
+  const e={id:newId('e'),created_at:t,ts:t,updated_at:t,
+    title:null,body:null,estimate_min:null,deleted:0,...f};
+  DB.entries.push(e); DB.settings.dirty=true; save(); return e; }
 function getEntry(id){ return DB.entries.find(e=>e.id===id&&!e.deleted); }
 function updateEntry(id,p){ const e=getEntry(id); if(!e)return null;
-  delete p.id; delete p.created_at; Object.assign(e,p); save(); return e; }
+  delete p.id; delete p.created_at; Object.assign(e,p); touch(e); save(); return e; }
 function deleteEntry(id){ const e=getEntry(id); if(!e)return;
-  e.deleted=1; DB.edges.forEach(d=>{ if(d.from_id===id||d.to_id===id)d.deleted=1; }); save(); }
+  e.deleted=1; touch(e);
+  DB.edges.forEach(d=>{ if(d.from_id===id||d.to_id===id){d.deleted=1;touch(d);} }); save(); }
 
 function addEdge(from_id,to_id,type_id){ if(from_id===to_id) return null;
   const dup=DB.edges.find(d=>!d.deleted&&d.from_id===from_id&&d.to_id===to_id&&d.type_id===type_id);
   if(dup) return dup;
-  const d={id:DB.eseq++,from_id,to_id,type_id,created_at:nowISO(),deleted:0};
-  DB.edges.push(d); save(); return d; }
-function removeEdge(id){ const d=DB.edges.find(x=>x.id===id); if(d){d.deleted=1;save();} }
-function retypeEdge(id,type_id){ const d=DB.edges.find(x=>x.id===id&&!x.deleted); if(d){d.type_id=type_id;save();} }
+  const t=nowISO();
+  const d={id:newId('g'),from_id,to_id,type_id,created_at:t,updated_at:t,deleted:0};
+  DB.edges.push(d); DB.settings.dirty=true; save(); return d; }
+function removeEdge(id){ const d=DB.edges.find(x=>x.id===id); if(d){d.deleted=1;touch(d);save();} }
+function retypeEdge(id,type_id){ const d=DB.edges.find(x=>x.id===id&&!x.deleted);
+  if(d){d.type_id=type_id;touch(d);save();} }
 const liveEdges=()=>DB.edges.filter(d=>!d.deleted);
 
-function createLinkType(name,locked=0){ const t={id:DB.tseq++,name,locked,deleted:0};
-  DB.linkTypes.push(t); save(); return t; }
+function createLinkType(name,locked=0){ const t0=nowISO();
+  const t={id:newId('t'),name,locked,updated_at:t0,deleted:0};
+  DB.linkTypes.push(t); DB.settings.dirty=true; save(); return t; }
 function getType(id){ return DB.linkTypes.find(t=>t.id===id&&!t.deleted); }
 const liveTypes=()=>DB.linkTypes.filter(t=>!t.deleted);
 
-function createView(f){ const v={id:DB.vseq++,name:'view',cond_ids:[],type_ids:[],locked:0,deleted:0,...f};
-  DB.views.push(v); save(); return v; }
+function createView(f){ const t0=nowISO();
+  const v={id:newId('v'),name:'view',cond_ids:[],type_ids:[],locked:0,updated_at:t0,deleted:0,...f};
+  DB.views.push(v); DB.settings.dirty=true; save(); return v; }
 function getView(id){ return DB.views.find(v=>v.id===id&&!v.deleted); }
 const liveViews=()=>DB.views.filter(v=>!v.deleted);
 function fallbackView(){ return getView(DB.settings.allViewId)||liveViews()[0]; }
 
-function createTab(cls,label,cfg={}){ const t={id:DB.bseq++,cls,label,cfg,deleted:0};
-  DB.tabs.push(t); save(); return t; }
+function createTab(cls,label,cfg={}){ const t0=nowISO();
+  const pos=Math.max(0,...DB.tabs.filter(x=>!x.deleted).map(x=>x.pos||0))+1;
+  const t={id:newId('b'),cls,label,pos,cfg,updated_at:t0,deleted:0};
+  DB.tabs.push(t); DB.settings.dirty=true; save(); return t; }
 function getTab(id){ return DB.tabs.find(t=>t.id===id&&!t.deleted); }
-const liveTabs=()=>DB.tabs.filter(t=>!t.deleted);
+const liveTabs=()=>DB.tabs.filter(t=>!t.deleted).sort((a,b)=>(a.pos||0)-(b.pos||0));
 
 // per-field view memory: fieldKey -> view id
 const Mem={
@@ -367,7 +458,9 @@ function seed(){
   createTab('views','🔎',{});
   createTab('links','🔗',{});
   createTab('tabs','🕮',{});
-  save();
+  DB.settings.idsMigrated=true;   // fresh DBs are born with global ids
+  DB.settings.dirty=false;        // pristine: sync may ADOPT remote data
+  saveNow();
 }
 // ==== SEC:APP/SEED (END) ====
 
@@ -495,31 +588,186 @@ function endEntryOf(startId,endTypeId){
 
 // ==== SEC:APP/EXPORT (BEGIN) ====
 // NDJSON, one typed object per line. Lossless over all five tables.
-function exportNDJSON(){
-  const L=[JSON.stringify({_t:'meta',v:2,seq:DB.seq,eseq:DB.eseq,tseq:DB.tseq,
-    vseq:DB.vseq,bseq:DB.bseq,settings:DB.settings,exported:nowISO()})];
+// serialize()/parseNDJSON() are shared by file export/import AND Drive
+// sync — one wire format everywhere.
+function serialize(){
+  const L=[JSON.stringify({_t:'meta',v:2,exported:nowISO(),
+    settings:{allViewId:DB.settings.allViewId,mem:DB.settings.mem}})];
   const dump=(arr,t)=>arr.forEach(o=>L.push(JSON.stringify({_t:t,...o})));
   dump(DB.entries,'entry'); dump(DB.edges,'edge'); dump(DB.linkTypes,'linktype');
   dump(DB.views,'view'); dump(DB.tabs,'tab');
-  const blob=new Blob([L.join('\n')],{type:'application/x-ndjson'});
+  return L.join('\n'); }
+function parseNDJSON(text){
+  const nd={v:2,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
+    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:true}};
+  for(const line of text.split('\n')){ if(!line.trim())continue;
+    let o; try{o=JSON.parse(line);}catch(e){return null;}
+    const t=o._t; delete o._t;
+    if(t==='meta'){ if(o.settings){ nd.settings.allViewId=o.settings.allViewId??null;
+      nd.settings.mem=o.settings.mem||{}; } }
+    else if(t==='entry')nd.entries.push(o); else if(t==='edge')nd.edges.push(o);
+    else if(t==='linktype')nd.linkTypes.push(o); else if(t==='view')nd.views.push(o);
+    else if(t==='tab')nd.tabs.push(o); }
+  nd.legacyIds=nd.entries.some(e=>typeof e.id==='number');
+  return nd; }
+function exportNDJSON(){
+  const blob=new Blob([serialize()],{type:'application/x-ndjson'});
   const a=el('a'); a.href=URL.createObjectURL(blob);
   a.download='capturelog-'+new Date().toISOString().slice(0,10)+'.ndjson';
   document.body.appendChild(a); a.click(); a.remove();
   toast('Exported '+DB.entries.length+' entries'); }
-function importNDJSON(text){
-  const nd={v:2,seq:1,eseq:1,tseq:1,vseq:1,bseq:1,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
-    settings:{allViewId:null,mem:{},migratedV1:true}};
-  for(const line of text.split('\n')){ if(!line.trim())continue;
-    let o; try{o=JSON.parse(line);}catch(e){toast('Import failed: bad line');return;}
-    const t=o._t; delete o._t;
-    if(t==='meta'){ Object.assign(nd,{seq:o.seq,eseq:o.eseq,tseq:o.tseq,vseq:o.vseq,bseq:o.bseq});
-      if(o.settings)nd.settings=o.settings; }
-    else if(t==='entry')nd.entries.push(o); else if(t==='edge')nd.edges.push(o);
-    else if(t==='linktype')nd.linkTypes.push(o); else if(t==='view')nd.views.push(o);
-    else if(t==='tab')nd.tabs.push(o); }
-  if(!confirm('Replace current data ('+DB.entries.length+' entries) with import ('+nd.entries.length+' entries)?'))return;
-  DB=nd; saveNow(); UI.rerender(); toast('Imported'); }
+function importText(text,mode){        // mode: 'merge' | 'replace'
+  const nd=parseNDJSON(text);
+  if(!nd){ toast('Import failed: bad file'); return; }
+  if(mode==='merge'){
+    if(nd.legacyIds){ toast('Old-format file — use Import & replace, or re-export from an updated app'); return; }
+    mergeDB(nd); UI.rerender(); toast('Merged'); }
+  else {
+    if(!confirm('Replace current data ('+DB.entries.length+' entries) with import ('+nd.entries.length+' entries)?'))return;
+    if(nd.legacyIds) nd.settings.idsMigrated=false;
+    DB=nd; if(!DB.settings.idsMigrated) migrateIds();
+    initCounters(); UI.tabId=liveTabs()[0]?.id;
+    saveNow(); UI.rerender(); toast('Imported'); } }
 // ==== SEC:APP/EXPORT (END) ====
+
+// ==== SEC:APP/MERGE (BEGIN) ====
+// Multi-device merge. Rule: union by id per table; where both sides
+// have a record, the newer updated_at wins whole-record (created_at as
+// fallback clock). Deletes are just records whose tombstone flag rode
+// in on a newer clock, so delete-vs-edit resolves by the same rule.
+// Order-insensitive and idempotent: any stale file merges harmlessly.
+// The pristine exception: a DB that contains nothing but its own seed
+// (dirty===false) ADOPTS incoming data wholesale, preventing duplicate
+// keystone entries/views/tabs when a second device joins.
+const stampOf=r=>r.updated_at||r.created_at||'';
+function mergeDB(nd){
+  ['entries','edges','linkTypes','views','tabs'].forEach(t=>{
+    const local=new Map(DB[t].map(r=>[r.id,r]));
+    (nd[t]||[]).forEach(r=>{
+      const l=local.get(r.id);
+      if(!l) DB[t].push(r);
+      else if(stampOf(r)>stampOf(l)) Object.assign(l,r); }); });
+  if(!getView(DB.settings.allViewId)&&nd.settings&&getView(nd.settings.allViewId))
+    DB.settings.allViewId=nd.settings.allViewId;
+  Object.entries((nd.settings&&nd.settings.mem)||{}).forEach(([k,v])=>{
+    if(!(k in DB.settings.mem)) DB.settings.mem[k]=v; });   // local field memory wins
+  DB.settings.dirty=true; saveNow(); }
+function adoptOrMerge(nd){
+  if(DB.settings.dirty===false){
+    DB=nd; initCounters(); UI.tabId=liveTabs()[0]?.id;
+    saveNow(); toast('Adopted synced data'); }
+  else mergeDB(nd); }
+// ==== SEC:APP/MERGE (END) ====
+
+// ==== SEC:APP/SYNC (BEGIN) ====
+// Google Drive sync. Client-only: Google Identity Services for an
+// access token (drive.file scope — the app can only see files it
+// created), Drive REST v3 for the blob. Cycle: pull remote -> adopt or
+// merge -> push the union. Because the merge is convergent, blind
+// overwrites between devices self-heal on the next cycle; Drive needs
+// no locking. Config (client id, file id, last-seen modifiedTime) is
+// per-device in localStorage, never in the synced DB.
+// Requires an https origin registered on the OAuth client (GitHub
+// Pages); silent token refresh works while signed into Google, else
+// status becomes need-auth and the menu button prompts interactively.
+const Sync={
+  CFG:'capturelog.sync',
+  st:{clientId:null,fileId:null,remoteTime:null},
+  token:null, tokenExp:0, tokenClient:null, gisLoading:null,
+  status:'off', busy:false, pushTimer:null,
+  loadCfg(){ try{ const r=localStorage.getItem(this.CFG); if(r)this.st=JSON.parse(r); }catch(e){} },
+  saveCfg(){ try{ localStorage.setItem(this.CFG,JSON.stringify(this.st)); }catch(e){} },
+  configured(){ return !!this.st.clientId; },
+  init(){ this.loadCfg();
+    if(this.configured()){ this.status='need-auth'; this.syncNow(false); }
+    setInterval(()=>{ if(this.configured())this.syncNow(false); },5*60*1000); },
+  loadGIS(){ if(window.google&&google.accounts) return Promise.resolve();
+    if(this.gisLoading) return this.gisLoading;
+    this.gisLoading=new Promise((res,rej)=>{
+      const s=document.createElement('script');
+      s.src='https://accounts.google.com/gsi/client';
+      s.onload=res; s.onerror=()=>rej(new Error('GIS blocked'));
+      document.head.appendChild(s); });
+    return this.gisLoading; },
+  ensureToken(interactive){
+    if(this.token&&Date.now()<this.tokenExp) return Promise.resolve();
+    return this.loadGIS().then(()=>new Promise((res,rej)=>{
+      if(!this.tokenClient)
+        this.tokenClient=google.accounts.oauth2.initTokenClient({
+          client_id:this.st.clientId,
+          scope:'https://www.googleapis.com/auth/drive.file',
+          callback:()=>{} });
+      this.tokenClient.callback=(resp)=>{
+        if(resp&&resp.access_token){
+          this.token=resp.access_token;
+          this.tokenExp=Date.now()+((resp.expires_in||3600)*1000)-60000;
+          res(); }
+        else { this.status='need-auth'; rej(new Error('no token')); } };
+      this.tokenClient.error_callback=()=>{ this.status='need-auth'; rej(new Error('auth')); };
+      // silent refresh when possible; interactive taps may show consent
+      this.tokenClient.requestAccessToken(interactive?{}:{prompt:'none'});
+    })); },
+  api(url,opts={}){
+    opts.headers=Object.assign({Authorization:'Bearer '+this.token},opts.headers||{});
+    return fetch(url,opts).then(r=>{
+      if(r.status===401){ this.token=null; this.status='need-auth'; throw new Error('auth'); }
+      if(!r.ok) throw new Error('drive '+r.status);
+      return r; }); },
+  find(){ if(this.st.fileId) return Promise.resolve();
+    const q=encodeURIComponent("name='capturelog-sync.ndjson' and trashed=false");
+    return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,modifiedTime)')
+      .then(r=>r.json()).then(j=>{
+        if(j.files&&j.files.length){
+          this.st.fileId=j.files[0].id; this.saveCfg(); return; }
+        const boundary='clb'+Math.random().toString(36).slice(2);
+        const body='--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'
+          +JSON.stringify({name:'capturelog-sync.ndjson'})
+          +'\r\n--'+boundary+'\r\nContent-Type: application/x-ndjson\r\n\r\n'
+          +serialize()+'\r\n--'+boundary+'--';
+        return this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime',
+          {method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body})
+          .then(r=>r.json()).then(f=>{
+            this.st.fileId=f.id; this.st.remoteTime=f.modifiedTime; this.saveCfg(); }); }); },
+  pull(){
+    return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?fields=modifiedTime')
+      .then(r=>r.json()).then(meta=>{
+        if(meta.modifiedTime===this.st.remoteTime) return false;
+        return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?alt=media')
+          .then(r=>r.text()).then(text=>{
+            const nd=parseNDJSON(text);
+            if(nd&&!nd.legacyIds) adoptOrMerge(nd);
+            this.st.remoteTime=meta.modifiedTime; this.saveCfg(); return true; }); })
+      .catch(e=>{ if(String(e).includes('404')){ this.st.fileId=null; this.saveCfg(); }
+        throw e; }); },
+  push(){
+    return this.api('https://www.googleapis.com/upload/drive/v3/files/'+this.st.fileId
+        +'?uploadType=media&fields=modifiedTime',
+      {method:'PATCH',headers:{'Content-Type':'application/x-ndjson'},body:serialize()})
+      .then(r=>r.json()).then(f=>{ this.st.remoteTime=f.modifiedTime; this.saveCfg(); }); },
+  syncNow(interactive){
+    if(this.busy||!this.configured()) return Promise.resolve();
+    this.busy=true; const prev=this.status; this.status='syncing';
+    return this.ensureToken(interactive)
+      .then(()=>this.find())
+      .then(()=>this.pull())
+      .then(changed=>{ if(changed)UI.rerender(); return this.push(); })
+      .then(()=>{ this.status='ok'; if(interactive)toast('Synced'); })
+      .catch(()=>{ if(this.status==='syncing')this.status='error';
+        if(interactive)toast(this.status==='need-auth'?'Drive: sign-in needed — tap again':'Sync failed'); })
+      .finally(()=>{ this.busy=false; }); },
+  setup(){
+    const cid=prompt('Google Drive sync setup.\n\nPaste the OAuth Client ID from your Google Cloud project\n(ends in .apps.googleusercontent.com).\nThis page\'s URL must be an authorized JavaScript origin.',
+      this.st.clientId||'');
+    if(cid&&cid.trim()){ this.st.clientId=cid.trim(); this.saveCfg(); this.syncNow(true); } },
+  disconnect(){
+    this.st={clientId:null,fileId:null,remoteTime:null}; this.saveCfg();
+    this.token=null; this.status='off'; toast('Drive sync disconnected'); } };
+window.SyncRef=Sync;
+scheduleDriveSync=function(){           // called from saveNow(): push soon
+  if(!Sync.configured()) return;
+  clearTimeout(Sync.pushTimer);
+  Sync.pushTimer=setTimeout(()=>Sync.syncNow(false),15000); };
+// ==== SEC:APP/SYNC (END) ====
 
 // ==== SEC:APP/UI (BEGIN) ==============================================
 const UI={};
@@ -671,14 +919,16 @@ function linksField(container,entryId,fieldKey,afterChange){
   parentEdgesOf(entryId).forEach(({edge,node,type})=>{
     wrap.appendChild(entryChip(node,{cls:'linked',
       typeLabel:type.name,
-      onTypeTap:()=>pickType(t=>{retypeEdge(edge.id,t.id);afterChange();}),
+      onTypeTap:()=>pickType(t=>{retypeEdge(edge.id,t.id);
+        DB.settings.mem[fieldKey+'.type']=t.id; save(); afterChange();}),
       onRemove:()=>{removeEdge(edge.id);afterChange();},
       onTap:()=>openEditor(node.id)})); });
   const add=el('button','chip add','⌕ link…');
   add.addEventListener('click',()=>{
     pickEntry(fieldKey,e=>{
       const tKey=fieldKey+'.type';
-      const tid=DB.settings.mem[tKey]||liveTypes().find(t=>t.name==='child').id;
+      const remembered=getType(DB.settings.mem[tKey]);
+      const tid=(remembered||liveTypes().find(t=>t.name==='child')||liveTypes()[0]).id;
       addEdge(entryId,e.id,tid); afterChange(); }); });
   wrap.appendChild(add);
   container.appendChild(wrap); }
@@ -740,7 +990,7 @@ function renderInterval(v,tab){
   const root=c.root_id?getEntry(c.root_id):null;
   const rf=el('button','f-field',root?disp(root):'root');
   rf.addEventListener('click',()=>pickEntry('tab'+tab.id+'.root',e=>{
-    c.root_id=e.id; save(); UI.rerender(); }));
+    c.root_id=e.id; touch(tab); save(); UI.rerender(); }));
   v.appendChild(rf);
   if(!root){ v.appendChild(el('div','empty','Pick a root entry (e.g. “Intervals”). Its children are your running clocks.')); return; }
 
@@ -884,12 +1134,13 @@ function renderLinks(v){
     const r=el('div','cfg-row');
     const nm=el('button','nm',t.name+(t.locked?' 🔒':'')); nm.style.textAlign='left';
     nm.addEventListener('click',()=>{ const v2=prompt('Rename link type:',t.name);
-      if(v2&&v2.trim()){ t.name=v2.trim(); save(); UI.rerender(); } });
+      if(v2&&v2.trim()){ t.name=v2.trim(); touch(t); save(); UI.rerender(); } });
     r.appendChild(nm);
     r.appendChild(el('span','mt',liveEdges().filter(d=>d.type_id===t.id).length+' links'));
     if(!t.locked){ const del=el('button','mini','✕');
       del.addEventListener('click',()=>{ if(confirm('Delete type “'+t.name+'”? Its links are soft-deleted.')){
-        t.deleted=1; DB.edges.forEach(d=>{if(d.type_id===t.id)d.deleted=1;}); save(); UI.rerender(); } });
+        t.deleted=1; touch(t);
+        DB.edges.forEach(d=>{if(d.type_id===t.id){d.deleted=1;touch(d);}}); save(); UI.rerender(); } });
       r.appendChild(del); }
     v.appendChild(r); });
 }
@@ -904,15 +1155,16 @@ function renderTabs(v){
   liveTabs().forEach((t,i,arr)=>{
     const r=el('div','cfg-row');
     const lbl=el('input'); lbl.value=t.label; lbl.style.cssText='width:52px;text-align:center;padding:6px';
-    lbl.addEventListener('change',()=>{t.label=lbl.value||'·';save();renderTabbar();});
+    lbl.addEventListener('change',()=>{t.label=lbl.value||'·';touch(t);save();renderTabbar();});
     r.appendChild(lbl);
     const nm=el('button','nm',t.cls); nm.style.textAlign='left';
     if(!engine.includes(t.cls)) nm.addEventListener('click',()=>openTabEditor(t.id));
     r.appendChild(nm);
     const up=el('button','mini','↑');
-    up.addEventListener('click',()=>{ const idx=DB.tabs.indexOf(t);
-      const prev=DB.tabs.slice(0,idx).reverse().find(x=>!x.deleted);
-      if(prev){ const j=DB.tabs.indexOf(prev); DB.tabs[j]=t; DB.tabs[idx]=prev; save(); UI.rerender(); } });
+    up.addEventListener('click',()=>{ const vis=liveTabs(); const idx=vis.indexOf(t);
+      if(idx>0){ const p=vis[idx-1];
+        const tmp=t.pos; t.pos=p.pos; p.pos=tmp;
+        touch(t); touch(p); save(); UI.rerender(); } });
     r.appendChild(up);
     if(!engine.includes(t.cls)){
       const dup=el('button','mini','⧉'); dup.title='Duplicate';
@@ -921,7 +1173,7 @@ function renderTabs(v){
       r.appendChild(dup);
       const del=el('button','mini','✕');
       del.addEventListener('click',()=>{ if(confirm('Delete this tab? (Data is untouched.)')){
-        t.deleted=1; save(); if(UI.tabId===t.id)UI.tabId=liveTabs()[0].id; UI.rerender(); } });
+        t.deleted=1; touch(t); save(); if(UI.tabId===t.id)UI.tabId=liveTabs()[0].id; UI.rerender(); } });
       r.appendChild(del);
     }
     v.appendChild(r); });
@@ -1107,7 +1359,7 @@ function openViewEditor(viewId){
     if(!vw){ body.appendChild(el('div','empty','View was deleted.')); return; }
     body.appendChild(el('div','f-lbl','View name'));
     const nm=el('input','f-title'); nm.value=vw.name;
-    nm.addEventListener('input',()=>{vw.name=nm.value||'view';save();});
+    nm.addEventListener('input',()=>{vw.name=nm.value||'view';touch(vw);save();});
     body.appendChild(nm);
 
     body.appendChild(el('div','f-lbl','Conditions — entry must descend from ALL of:'));
@@ -1117,10 +1369,10 @@ function openViewEditor(viewId){
       vw.cond_ids=vw.cond_ids.filter(id=>getEntry(id));      // self-repair danglers
       vw.cond_ids.forEach(cid=>{
         crow.appendChild(entryChip(getEntry(cid),{onRemove:()=>{
-          vw.cond_ids=vw.cond_ids.filter(x=>x!==cid); save(); drawConds(); }})); });
+          vw.cond_ids=vw.cond_ids.filter(x=>x!==cid); touch(vw); save(); drawConds(); }})); });
       const add=el('button','chip add','＋ condition');
       add.addEventListener('click',()=>pickEntry('viewEditor.cond',e=>{
-        if(!vw.cond_ids.includes(e.id))vw.cond_ids.push(e.id); save(); drawConds(); }));
+        if(!vw.cond_ids.includes(e.id))vw.cond_ids.push(e.id); touch(vw); save(); drawConds(); }));
       crow.appendChild(add);
       if(!vw.cond_ids.length) crow.appendChild(el('span','f-created','(none — matches everything)'));
     }
@@ -1133,13 +1385,13 @@ function openViewEditor(viewId){
       const c=el('button','chip'+(on?' sel':''),t.name);
       c.addEventListener('click',()=>{
         vw.type_ids=on?vw.type_ids.filter(x=>x!==t.id):[...vw.type_ids,t.id];
-        save(); Modal.refresh(); });
+        touch(vw); save(); Modal.refresh(); });
       trow.appendChild(c); });
 
     if(!vw.locked){
       const del=el('button','dangerbtn','Delete view');
       del.addEventListener('click',()=>{ if(confirm('Delete view “'+vw.name+'”?')){
-        vw.deleted=1; save(); Modal.pop(); } });
+        vw.deleted=1; touch(vw); save(); Modal.pop(); } });
       body.appendChild(del); }
   });
 }
@@ -1153,7 +1405,7 @@ function openTabEditor(tabId){
     if(!t){ body.appendChild(el('div','empty','Tab was deleted.')); return; }
     body.appendChild(el('div','f-lbl',t.cls+' tab — label'));
     const lbl=el('input','f-title'); lbl.value=t.label;
-    lbl.addEventListener('input',()=>{t.label=lbl.value||'·';save();renderTabbar();});
+    lbl.addEventListener('input',()=>{t.label=lbl.value||'·';touch(t);save();renderTabbar();});
     body.appendChild(lbl);
     const c=t.cfg;
 
@@ -1162,30 +1414,30 @@ function openTabEditor(tabId){
       const cur=c[key]?getEntry(c[key]):null;
       const f=el('button','f-field',cur?disp(cur):'pick…');
       f.addEventListener('click',()=>pickEntry('tabEditor.'+key,e=>{
-        c[key]=e.id; save(); Modal.refresh(); }));
+        c[key]=e.id; touch(t); save(); Modal.refresh(); }));
       body.appendChild(f); };
     const viewFieldCfg=(label,key)=>{
       body.appendChild(el('div','f-lbl',label));
       const cur=c[key]?getView(c[key]):null;
       const f=el('button','f-field',cur?cur.name:'pick…');
-      f.addEventListener('click',()=>pickView(vw=>{c[key]=vw.id;save();Modal.refresh();}));
+      f.addEventListener('click',()=>pickView(vw=>{c[key]=vw.id;touch(t);save();Modal.refresh();}));
       body.appendChild(f); };
     const typeFieldCfg=(label,key)=>{
       body.appendChild(el('div','f-lbl',label));
       const cur=c[key]?getType(c[key]):null;
       const f=el('button','f-field',cur?cur.name:'pick…');
-      f.addEventListener('click',()=>pickType(tp=>{c[key]=tp.id;save();Modal.refresh();}));
+      f.addEventListener('click',()=>pickType(tp=>{c[key]=tp.id;touch(t);save();Modal.refresh();}));
       body.appendChild(f); };
 
     if(t.cls==='create'){
       c.def=c.def||{};
       body.appendChild(el('div','f-lbl','Default title'));
       const dt=el('input','f-title'); dt.value=c.def.title||'';
-      dt.addEventListener('input',()=>{c.def.title=dt.value||null;save();});
+      dt.addEventListener('input',()=>{c.def.title=dt.value||null;touch(t);save();});
       body.appendChild(dt);
       body.appendChild(el('div','f-lbl','Default body'));
       const db=el('textarea','f-body short'); db.value=c.def.body||'';
-      db.addEventListener('input',()=>{c.def.body=db.value||null;save();});
+      db.addEventListener('input',()=>{c.def.body=db.value||null;touch(t);save();});
       body.appendChild(db);
       body.appendChild(el('div','f-lbl','Default links'));
       const lr=el('div','chiprow'); body.appendChild(lr);
@@ -1193,11 +1445,11 @@ function openTabEditor(tabId){
         lr.innerHTML=''; c.def.links=(c.def.links||[]).filter(l=>getEntry(l.to));
         c.def.links.forEach((l,i)=>{
           lr.appendChild(entryChip(getEntry(l.to),{typeLabel:getType(l.type)?.name,
-            onRemove:()=>{c.def.links.splice(i,1);save();drawDef();}})); });
+            onRemove:()=>{c.def.links.splice(i,1);touch(t);save();drawDef();}})); });
         const add=el('button','chip add','＋');
         add.addEventListener('click',()=>pickEntry('tabEditor.deflink',e=>{
           c.def.links.push({to:e.id,type:liveTypes().find(x=>x.name==='child').id});
-          save(); drawDef(); }));
+          touch(t); save(); drawDef(); }));
         lr.appendChild(add); }
       drawDef();
     }
@@ -1218,25 +1470,42 @@ function openTabEditor(tabId){
 
 // ==== SEC:APP/UI/MENU (BEGIN) ====
 const Menu={ toggle(ev){ ev&&ev.stopPropagation();
+  const syncLbl={off:'Set up Drive sync…','need-auth':'Drive: sign in',
+    ok:'Sync now',error:'Sync now (retry)',syncing:'Syncing…'}[Sync.status]||'Drive sync';
+  $('#m-sync').textContent=syncLbl;
+  $('#m-syncoff').style.display=Sync.configured()?'block':'none';
   $('#m-note').textContent=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
     +DB.entries.filter(e=>!e.deleted).length+' entries, '
-    +liveEdges().length+' links, '+liveViews().length+' views.';
+    +liveEdges().length+' links, '+liveViews().length+' views. '
+    +(Sync.configured()?('Drive: '+Sync.status+'.'):'Drive: not set up.');
   $('#menu').classList.toggle('on'); } };
 document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
+$('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
+  if(!Sync.configured()) Sync.setup(); else Sync.syncNow(true); });
+$('#m-syncoff').addEventListener('click',()=>{ $('#menu').classList.remove('on');
+  if(confirm('Disconnect Drive sync on this device? The Drive file and local data are kept.'))
+    Sync.disconnect(); });
 $('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList.remove('on');});
-$('#m-import').addEventListener('click',()=>{$('#importfile').click();$('#menu').classList.remove('on');});
+let importMode='merge';
+$('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
+$('#m-replace').addEventListener('click',()=>{importMode='replace';$('#importfile').click();$('#menu').classList.remove('on');});
 $('#importfile').addEventListener('change',ev=>{
   const f=ev.target.files[0]; if(!f)return;
-  const r=new FileReader(); r.onload=()=>importNDJSON(r.result); r.readAsText(f);
+  const r=new FileReader(); r.onload=()=>importText(r.result,importMode); r.readAsText(f);
   ev.target.value=''; });
 // ==== SEC:APP/UI/MENU (END) ====
 
 // ==== SEC:APP/UI (END) ================================================
 
 // ==== SEC:APP/BOOT (BEGIN) ====
-load(); seed(); migrateV1();
+load();
+migrateIds();        // numeric -> device-prefixed global ids (one-shot)
+initCounters();      // per-device id counters, derived by scan
+seed();              // no-op unless the DB is empty
+migrateV1();         // one-shot import of Phase-1 data, if present
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
+Sync.init();         // silent Drive sync attempt if configured
 // ==== SEC:APP/BOOT (END) ====
 
 // ==== SEC:APP (END) ===================================================
