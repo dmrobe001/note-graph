@@ -241,6 +241,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 #menu button{display:block;width:100%;text-align:left;padding:12px 15px;font-size:14px}
 #menu button:active{background:var(--surface)}
 #menu .note{padding:8px 15px 11px;font-size:11px;color:var(--faint);border-top:1px solid var(--line)}
+.diag-val{max-width:58%;text-align:right;word-break:break-all} /* keeps diagnostics rows readable on narrow screens */
 .iconbtn{color:var(--muted);font-size:19px;padding:2px 8px}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:70;
   background:var(--surface2);border:1px solid var(--line);border-radius:999px;
@@ -265,8 +266,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 <div id="menu">
   <button id="m-sync">Drive sync</button>
   <button id="m-syncoff" style="display:none">Drive settings…</button>
-  <button id="m-diag">Sync diagnostics…</button>
-  <button id="m-restore">Snapshots / restore…</button>
+  <button id="m-diag" aria-label="View sync diagnostics">Sync diagnostics…</button>
+  <button id="m-restore" aria-label="Manage snapshots and restore data">Snapshots / restore…</button>
   <button id="m-export">Export NDJSON</button>
   <button id="m-import">Import &amp; merge…</button>
   <button id="m-replace">Import &amp; replace…</button>
@@ -280,6 +281,9 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 // ==== SEC:APP (BEGIN) =================================================
 
 // ==== SEC:APP/UTIL (BEGIN) ====
+const MAX_SNAPSHOT_LABEL_LENGTH=80;
+const SINGLETON_ENGINE_TAB_CLASSES=['views','links','tabs'];
+const CANON_WORKFLOW_TAB_CLASSES=['create','interval','explore','exclusive'];
 const $  = s => document.querySelector(s);
 const el = (tag, cls, txt) => { const e=document.createElement(tag);
   if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
@@ -329,6 +333,7 @@ window.addEventListener('pagehide',saveNow);
 function load(){ const raw=Store.read(STORE_KEY);
   if(raw){ try{ DB=JSON.parse(raw); }catch(e){ console.error('load failed',e); } }
   if(!DB.settings) DB.settings={};
+  if(!DB.settings.mem) DB.settings.mem={};
   if(DB.settings.syncEpoch==null) DB.settings.syncEpoch=0;
   $('#membanner').classList.toggle('on',Store.memoryOnly); }
 // ==== SEC:APP/STORE (END) ====
@@ -341,10 +346,11 @@ function load(){ const raw=Store.read(STORE_KEY);
 function deviceId(){
   let d=null; try{ d=localStorage.getItem('capturelog.device'); }catch(e){}
   if(!d){
+    const c=window.crypto;
     // SEC:APP/IDS: prefer strong device IDs for cross-device uniqueness.
-    if(window.crypto&&typeof crypto.randomUUID==='function') d=crypto.randomUUID();
-    else if(window.crypto&&typeof crypto.getRandomValues==='function'){
-      const b=new Uint8Array(16); crypto.getRandomValues(b);
+    if(c&&typeof c.randomUUID==='function') d=c.randomUUID();
+    else if(c&&typeof c.getRandomValues==='function'){
+      const b=new Uint8Array(16); c.getRandomValues(b);
       d=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
     } else d=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,14));
     try{ localStorage.setItem('capturelog.device',d); }catch(e){} }
@@ -659,6 +665,7 @@ function importText(text,mode){        // mode: 'merge' | 'replace'
 // keystone entries/views/tabs when a second device joins.
 const stampOf=r=>r.updated_at||r.created_at||'';
 function stableCfgJSON(v){
+  if(v==null) return 'null';
   if(Array.isArray(v)) return '['+v.map(stableCfgJSON).join(',')+']';
   if(v&&typeof v==='object'){
     return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableCfgJSON(v[k])).join(',')+'}'; }
@@ -666,8 +673,9 @@ function stableCfgJSON(v){
 function tabCanonKey(tab){
   if(!tab||tab.deleted) return null;
   const cls=tab.cls||'';
-  if(['views','links','tabs'].includes(cls)) return 'engine:'+cls; // SEC:APP/MERGE: singleton engine tabs
-  if(['create','interval','explore','exclusive'].includes(cls))
+  // SEC:APP/MERGE: engine config tabs are singleton by design.
+  if(SINGLETON_ENGINE_TAB_CLASSES.includes(cls)) return 'engine:'+cls;
+  if(CANON_WORKFLOW_TAB_CLASSES.includes(cls))
     return 'workflow:'+cls+'|'+(tab.label||'')+'|'+stableCfgJSON(tab.cfg||{});
   return null; } // custom classes are left untouched
 function duplicateTabSummary(rows){
@@ -695,6 +703,10 @@ function canonicalizeTabs(){
   if(UI.tabId&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
   return dup.dupes;
 }
+// adoptOrMerge return values:
+//  - 'ignored': payload missing/legacy
+//  - 'stale-remote': remote epoch is behind local
+//  - 'ok': merge/adopt applied
 function mergeDB(nd){
   if(!DB.settings.mem) DB.settings.mem={};
   ['entries','edges','linkTypes','views','tabs'].forEach(t=>{
@@ -712,7 +724,7 @@ function mergeDB(nd){
   canonicalizeTabs();
   saveNow({schedule:false}); } // SEC:APP/MERGE: sync-internal writes must not queue another sync
 function adoptOrMerge(nd){
-  if(!nd||nd.legacyIds) return 'ignored';
+  if(!nd||nd.legacyIds) return 'ignored'; // import parser flags old numeric-ID payloads as legacyIds
   if(!nd.settings) nd.settings={};
   if(nd.settings.syncEpoch==null) nd.settings.syncEpoch=0;
   const localEpoch=DB.settings.syncEpoch||0, remoteEpoch=nd.settings.syncEpoch||0;
@@ -850,15 +862,16 @@ const Sync={
     const q=encodeURIComponent("name contains 'capturelog-snapshot-' and trashed=false");
     return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)')
       .then(r=>r.json()).then(j=>j.files||[]); },
+  snapshotStamp(){ return new Date().toISOString().replace(/[:.]/g,'-'); },
+  snapshotFileName(){ return 'capturelog-snapshot-'+this.snapshotStamp()+'-e'+(DB.settings.syncEpoch||0)+'.ndjson'; },
   createSnapshot(){
-    const name='capturelog-snapshot-'+new Date().toISOString().replace(/[:]/g,'-')
-      +'-e'+(DB.settings.syncEpoch||0)+'.ndjson';
-    return this.uploadNamedNDJSON(name,serialize()); },
+    return this.uploadNamedNDJSON(this.snapshotFileName(),serialize()); },
   restoreSnapshot(file){
     return this.api('https://www.googleapis.com/drive/v3/files/'+file.id+'?alt=media')
       .then(r=>r.text()).then(text=>{
         const nd=parseNDJSON(text);
         if(!nd||nd.legacyIds) throw new Error('bad snapshot');
+        // SEC:APP/SYNC: restored snapshot wins by advancing epoch above both peers.
         const nextEpoch=Math.max(DB.settings.syncEpoch||0,nd.settings?.syncEpoch||0)+1;
         DB=nd;
         if(!DB.settings) DB.settings={};
@@ -1674,7 +1687,7 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
       rows.forEach(([k,v])=>{
         const r=el('div','cfg-row');
         r.appendChild(el('span','nm',k));
-        const vv=el('span','mt',v); vv.style.maxWidth='58%'; vv.style.textAlign='right'; vv.style.wordBreak='break-all';
+        const vv=el('span','mt diag-val',v);
         r.appendChild(vv); body.appendChild(r); });
       if(d.duplicateTabs.groups.length){
         body.appendChild(el('div','f-lbl','Duplicate groups'));
@@ -1695,12 +1708,16 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
         box.innerHTML='';
         if(!files.length){ box.appendChild(el('div','empty','No snapshots found.')); return; }
         files.forEach(f=>{
+          const rawLabel=String(f.name||f.id||'snapshot').replace(/\s+/g,' ');
+          const label=rawLabel.length>MAX_SNAPSHOT_LABEL_LENGTH
+            ? rawLabel.slice(0,MAX_SNAPSHOT_LABEL_LENGTH-1)+'…'
+            : rawLabel;
           const r=el('div','cfg-row');
-          r.appendChild(el('span','nm',f.name||f.id));
+          r.appendChild(el('span','nm',label));
           r.appendChild(el('span','mt',fmtDT(f.modifiedTime||nowISO())));
           const rs=el('button','mini','Restore');
           rs.addEventListener('click',()=>{
-            if(!confirm('Restore snapshot "'+(f.name||f.id)+'" and overwrite local data?')) return;
+            if(!confirm('Restore snapshot "'+label+'" and overwrite local data?')) return;
             Sync.restoreSnapshot(f).catch(()=>toast('Restore failed — try again')); });
           r.appendChild(rs);
           box.appendChild(r);
