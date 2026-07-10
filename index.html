@@ -241,6 +241,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 #menu button{display:block;width:100%;text-align:left;padding:12px 15px;font-size:14px}
 #menu button:active{background:var(--surface)}
 #menu .note{padding:8px 15px 11px;font-size:11px;color:var(--faint);border-top:1px solid var(--line)}
+.diag-val{max-width:58%;text-align:right;word-break:break-all} /* keeps diagnostics rows readable on narrow screens */
 .iconbtn{color:var(--muted);font-size:19px;padding:2px 8px}
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:70;
   background:var(--surface2);border:1px solid var(--line);border-radius:999px;
@@ -265,6 +266,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 <div id="menu">
   <button id="m-sync">Drive sync</button>
   <button id="m-syncoff" style="display:none">Drive settings…</button>
+  <button id="m-diag" aria-label="View sync diagnostics">Sync diagnostics…</button>
+  <button id="m-restore" aria-label="Manage snapshots and restore data">Snapshots / restore…</button>
   <button id="m-export">Export NDJSON</button>
   <button id="m-import">Import &amp; merge…</button>
   <button id="m-replace">Import &amp; replace…</button>
@@ -278,6 +281,9 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 // ==== SEC:APP (BEGIN) =================================================
 
 // ==== SEC:APP/UTIL (BEGIN) ====
+const MAX_SNAPSHOT_LABEL_LENGTH=80;
+const SINGLETON_ENGINE_TAB_CLASSES=['views','links','tabs'];
+const CANON_WORKFLOW_TAB_CLASSES=['create','interval','explore','exclusive'];
 const $  = s => document.querySelector(s);
 const el = (tag, cls, txt) => { const e=document.createElement(tag);
   if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
@@ -314,17 +320,21 @@ const Store={ memoryOnly:false, _mem:null,
 
 let DB={ v:2,
   entries:[], edges:[], linkTypes:[], views:[], tabs:[],
-  settings:{ allViewId:null, mem:{}, migratedV1:false, idsMigrated:false, dirty:false } };
+  settings:{ allViewId:null, mem:{}, migratedV1:false, idsMigrated:false, dirty:false, syncEpoch:0 } };
 
 let saveTimer=null;
 let scheduleDriveSync=()=>{};          // replaced by SEC:APP/SYNC once defined
 function save(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNow,120); }
-function saveNow(){ clearTimeout(saveTimer); Store.write(JSON.stringify(DB));
-  scheduleDriveSync(); }
+function persistNow(){ clearTimeout(saveTimer); Store.write(JSON.stringify(DB)); } // SEC:APP/STORE: silent write path
+function saveNow(opts){ persistNow();
+  if(!opts||opts.schedule!==false) scheduleDriveSync(); }
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) saveNow(); });
 window.addEventListener('pagehide',saveNow);
 function load(){ const raw=Store.read(STORE_KEY);
   if(raw){ try{ DB=JSON.parse(raw); }catch(e){ console.error('load failed',e); } }
+  if(!DB.settings) DB.settings={};
+  if(!DB.settings.mem) DB.settings.mem={};
+  if(DB.settings.syncEpoch==null) DB.settings.syncEpoch=0;
   $('#membanner').classList.toggle('on',Store.memoryOnly); }
 // ==== SEC:APP/STORE (END) ====
 
@@ -335,7 +345,14 @@ function load(){ const raw=Store.read(STORE_KEY);
 // this device's own ids, so they need no persistence of their own.
 function deviceId(){
   let d=null; try{ d=localStorage.getItem('capturelog.device'); }catch(e){}
-  if(!d){ d=Math.random().toString(36).slice(2,7);
+  if(!d){
+    const c=window.crypto;
+    // SEC:APP/IDS: prefer strong device IDs for cross-device uniqueness.
+    if(c&&typeof c.randomUUID==='function') d=c.randomUUID();
+    else if(c&&typeof c.getRandomValues==='function'){
+      const b=new Uint8Array(16); c.getRandomValues(b);
+      d=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+    } else d=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,14));
     try{ localStorage.setItem('capturelog.device',d); }catch(e){} }
   return d; }
 let COUNTERS={};
@@ -598,19 +615,20 @@ function endEntryOf(startId,endTypeId){
 // sync — one wire format everywhere.
 function serialize(){
   const L=[JSON.stringify({_t:'meta',v:2,exported:nowISO(),
-    settings:{allViewId:DB.settings.allViewId,mem:DB.settings.mem}})];
+    settings:{allViewId:DB.settings.allViewId,mem:DB.settings.mem,syncEpoch:DB.settings.syncEpoch||0}})];
   const dump=(arr,t)=>arr.forEach(o=>L.push(JSON.stringify({_t:t,...o})));
   dump(DB.entries,'entry'); dump(DB.edges,'edge'); dump(DB.linkTypes,'linktype');
   dump(DB.views,'view'); dump(DB.tabs,'tab');
   return L.join('\n'); }
 function parseNDJSON(text){
   const nd={v:2,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
-    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:true}};
+    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:true,syncEpoch:0}};
   for(const line of text.split('\n')){ if(!line.trim())continue;
     let o; try{o=JSON.parse(line);}catch(e){return null;}
     const t=o._t; delete o._t;
     if(t==='meta'){ if(o.settings){ nd.settings.allViewId=o.settings.allViewId??null;
-      nd.settings.mem=o.settings.mem||{}; } }
+      nd.settings.mem=o.settings.mem||{};
+      nd.settings.syncEpoch=Number.isFinite(+o.settings.syncEpoch)?(+o.settings.syncEpoch):0; } }
     else if(t==='entry')nd.entries.push(o); else if(t==='edge')nd.edges.push(o);
     else if(t==='linktype')nd.linkTypes.push(o); else if(t==='view')nd.views.push(o);
     else if(t==='tab')nd.tabs.push(o); }
@@ -646,7 +664,51 @@ function importText(text,mode){        // mode: 'merge' | 'replace'
 // (dirty===false) ADOPTS incoming data wholesale, preventing duplicate
 // keystone entries/views/tabs when a second device joins.
 const stampOf=r=>r.updated_at||r.created_at||'';
+function stableCfgJSON(v){
+  if(v==null) return 'null';
+  if(Array.isArray(v)) return '['+v.map(stableCfgJSON).join(',')+']';
+  if(v&&typeof v==='object'){
+    return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableCfgJSON(v[k])).join(',')+'}'; }
+  return JSON.stringify(v); }
+function tabCanonKey(tab){
+  if(!tab||tab.deleted) return null;
+  const cls=tab.cls||'';
+  // SEC:APP/MERGE: engine config tabs are singleton by design.
+  if(SINGLETON_ENGINE_TAB_CLASSES.includes(cls)) return 'engine:'+cls;
+  if(CANON_WORKFLOW_TAB_CLASSES.includes(cls))
+    return 'workflow:'+cls+'|'+(tab.label||'')+'|'+stableCfgJSON(tab.cfg||{});
+  return null; } // custom classes are left untouched
+function duplicateTabSummary(rows){
+  const groupsByKey=new Map();
+  (rows||DB.tabs).filter(t=>!t.deleted).forEach(t=>{
+    const k=tabCanonKey(t); if(!k) return;
+    const g=groupsByKey.get(k)||{key:k,cls:t.cls,tabs:[]}; g.tabs.push(t); groupsByKey.set(k,g); });
+  const groups=[...groupsByKey.values()].filter(g=>g.tabs.length>1).map(g=>({
+    key:g.key,cls:g.cls,count:g.tabs.length,
+    ids:g.tabs.map(t=>t.id).sort((a,b)=>String(a).localeCompare(String(b))) }));
+  const dupes=groups.reduce((n,g)=>n+(g.count-1),0);
+  return {groups,dupes}; }
+function canonicalizeTabs(){
+  const dup=duplicateTabSummary(DB.tabs);
+  dup.groups.forEach(g=>{
+    const tabs=g.ids.map(id=>DB.tabs.find(t=>t.id===id)).filter(Boolean);
+    tabs.sort((a,b)=>{
+      const sa=stampOf(a), sb=stampOf(b);
+      if(sb!==sa) return sb.localeCompare(sa);
+      return String(a.id).localeCompare(String(b.id)); });
+    const keep=tabs[0];
+    tabs.slice(1).forEach(t=>{ t.deleted=1;
+      t.updated_at=stampOf(t)||stampOf(keep)||nowISO(); });
+  });
+  if(UI.tabId&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
+  return dup.dupes;
+}
+// adoptOrMerge return values:
+//  - 'ignored': payload missing/legacy
+//  - 'stale-remote': remote epoch is behind local
+//  - 'ok': merge/adopt applied
 function mergeDB(nd){
+  if(!DB.settings.mem) DB.settings.mem={};
   ['entries','edges','linkTypes','views','tabs'].forEach(t=>{
     const local=new Map(DB[t].map(r=>[r.id,r]));
     (nd[t]||[]).forEach(r=>{
@@ -657,12 +719,23 @@ function mergeDB(nd){
     DB.settings.allViewId=nd.settings.allViewId;
   Object.entries((nd.settings&&nd.settings.mem)||{}).forEach(([k,v])=>{
     if(!(k in DB.settings.mem)) DB.settings.mem[k]=v; });   // local field memory wins
-  DB.settings.dirty=true; saveNow(); }
+  DB.settings.syncEpoch=Math.max(DB.settings.syncEpoch||0,nd?.settings?.syncEpoch||0);
+  DB.settings.dirty=true;
+  canonicalizeTabs();
+  saveNow({schedule:false}); } // SEC:APP/MERGE: sync-internal writes must not queue another sync
 function adoptOrMerge(nd){
-  if(DB.settings.dirty===false){
+  if(!nd||nd.legacyIds) return 'ignored'; // import parser flags old numeric-ID payloads as legacyIds
+  if(!nd.settings) nd.settings={};
+  if(nd.settings.syncEpoch==null) nd.settings.syncEpoch=0;
+  const localEpoch=DB.settings.syncEpoch||0, remoteEpoch=nd.settings.syncEpoch||0;
+  if(remoteEpoch<localEpoch) return 'stale-remote';
+  if(remoteEpoch>localEpoch||DB.settings.dirty===false){
     DB=nd; initCounters(); UI.tabId=liveTabs()[0]?.id;
-    saveNow(); toast('Adopted synced data'); }
-  else mergeDB(nd); }
+    canonicalizeTabs();
+    saveNow({schedule:false});
+    toast('Adopted synced data'); }
+  else mergeDB(nd);
+  return 'ok'; }
 // ==== SEC:APP/MERGE (END) ====
 
 // ==== SEC:APP/SYNC (BEGIN) ====
@@ -693,13 +766,34 @@ const DEFAULT_CLIENT_ID='305277477211-dfb7fhhoe8mndv217sspkru5eu6k7e9s.apps.goog
 const Sync={
   CFG:'capturelog.sync',
   st:{clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0},
-  gisLoading:null, status:'off', busy:false, pushTimer:null,
+  gisLoading:null, status:'off', busy:false, pushTimer:null, lastPullDecision:'none',
   clientId(){ return this.st.clientId||DEFAULT_CLIENT_ID||null; },
   loadCfg(){ try{ const r=localStorage.getItem(this.CFG);
     if(r)Object.assign(this.st,JSON.parse(r)); }catch(e){} },
   saveCfg(){ try{ localStorage.setItem(this.CFG,JSON.stringify(this.st)); }catch(e){} },
   configured(){ return !!this.clientId(); },
   tokenValid(){ return this.st.token&&Date.now()<this.st.tokenExp; },
+  tokenStateLabel(){
+    if(!this.st.token) return 'missing';
+    return this.tokenValid()?'valid':'expired'; },
+  diagnostics(){
+    const dup=duplicateTabSummary(DB.tabs);
+    return {
+      deviceId:deviceId(),
+      syncConfigured:this.configured(),
+      token:this.tokenStateLabel(),
+      fileId:this.st.fileId||'(none)',
+      remoteModifiedTime:this.st.remoteTime||'(unknown)',
+      syncEpoch:DB.settings.syncEpoch||0,
+      tableCounts:{
+        entries:DB.entries.filter(e=>!e.deleted).length,
+        edges:DB.edges.filter(e=>!e.deleted).length,
+        linkTypes:DB.linkTypes.filter(e=>!e.deleted).length,
+        views:DB.views.filter(e=>!e.deleted).length,
+        tabs:DB.tabs.filter(e=>!e.deleted).length
+      },
+      duplicateTabs:dup
+    }; },
   init(){ this.loadCfg();
     if(this.configured()){
       this.status=this.tokenValid()?'ok':'need-auth';
@@ -746,21 +840,51 @@ const Sync={
         this.status='need-auth'; throw new Error('auth'); }
       if(!r.ok) throw new Error('drive '+r.status);
       return r; }); },
+  uploadNamedNDJSON(name,text){
+    const boundary='clb'+Math.random().toString(36).slice(2);
+    const body='--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'
+      +JSON.stringify({name})
+      +'\r\n--'+boundary+'\r\nContent-Type: application/x-ndjson\r\n\r\n'
+      +text+'\r\n--'+boundary+'--';
+    return this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime',
+      {method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body})
+      .then(r=>r.json());
+  },
   find(){ if(this.st.fileId) return Promise.resolve();
     const q=encodeURIComponent("name='capturelog-sync.ndjson' and trashed=false");
     return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,modifiedTime)')
       .then(r=>r.json()).then(j=>{
         if(j.files&&j.files.length){
           this.st.fileId=j.files[0].id; this.saveCfg(); return; }
-        const boundary='clb'+Math.random().toString(36).slice(2);
-        const body='--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'
-          +JSON.stringify({name:'capturelog-sync.ndjson'})
-          +'\r\n--'+boundary+'\r\nContent-Type: application/x-ndjson\r\n\r\n'
-          +serialize()+'\r\n--'+boundary+'--';
-        return this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime',
-          {method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body})
-          .then(r=>r.json()).then(f=>{
+        return this.uploadNamedNDJSON('capturelog-sync.ndjson',serialize()).then(f=>{
             this.st.fileId=f.id; this.st.remoteTime=f.modifiedTime; this.saveCfg(); }); }); },
+  listSnapshots(){
+    const q=encodeURIComponent("name contains 'capturelog-snapshot-' and trashed=false");
+    return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)')
+      .then(r=>r.json()).then(j=>j.files||[]); },
+  snapshotStamp(){ return new Date().toISOString().replace(/[:.]/g,'-'); },
+  snapshotFileName(){ return 'capturelog-snapshot-'+this.snapshotStamp()+'-e'+(DB.settings.syncEpoch||0)+'.ndjson'; },
+  createSnapshot(){
+    return this.uploadNamedNDJSON(this.snapshotFileName(),serialize()); },
+  restoreSnapshot(file){
+    return this.api('https://www.googleapis.com/drive/v3/files/'+file.id+'?alt=media')
+      .then(r=>r.text()).then(text=>{
+        const nd=parseNDJSON(text);
+        if(!nd||nd.legacyIds) throw new Error('bad snapshot');
+        // SEC:APP/SYNC: restored snapshot wins by advancing epoch above both peers.
+        const nextEpoch=Math.max(DB.settings.syncEpoch||0,nd.settings?.syncEpoch||0)+1;
+        DB=nd;
+        if(!DB.settings) DB.settings={};
+        DB.settings.syncEpoch=nextEpoch;
+        DB.settings.dirty=true; // SEC:APP/SYNC: restored snapshots must propagate
+        canonicalizeTabs();
+        initCounters();
+        UI.tabId=liveTabs()[0]?.id||null;
+        saveNow();
+        UI.rerender();
+        toast('Snapshot restored · epoch '+nextEpoch);
+        if(this.configured()&&this.tokenValid()) this.syncNow(false);
+      }); },
   pull(){
     return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?fields=modifiedTime')
       .then(r=>r.json()).then(meta=>{
@@ -768,7 +892,7 @@ const Sync={
         return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?alt=media')
           .then(r=>r.text()).then(text=>{
             const nd=parseNDJSON(text);
-            if(nd&&!nd.legacyIds) adoptOrMerge(nd);
+            this.lastPullDecision=adoptOrMerge(nd); // SEC:APP/SYNC: epoch guard + silent merge path
             this.st.remoteTime=meta.modifiedTime; this.saveCfg(); return true; }); })
       .catch(e=>{ if(String(e).includes('404')){ this.st.fileId=null; this.saveCfg(); }
         throw e; }); },
@@ -1544,12 +1668,85 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
     +DB.entries.filter(e=>!e.deleted).length+' entries, '
     +liveEdges().length+' links, '+liveViews().length+' views. '
     +(Sync.configured()?('Drive: '+Sync.status+'.'):'Drive: not set up.');
-  $('#menu').classList.toggle('on'); } };
+  $('#menu').classList.toggle('on'); },
+  diagnostics(){
+    const d=Sync.diagnostics();
+    Modal.push((m,body)=>{
+      body.appendChild(el('div','f-lbl','Sync diagnostics'));
+      const rows=[
+        ['deviceId',d.deviceId],
+        ['sync configured',d.syncConfigured?'yes':'no'],
+        ['token',d.token],
+        ['drive file id',d.fileId],
+        ['remote modified',d.remoteModifiedTime],
+        ['sync epoch',String(d.syncEpoch)],
+        ['entries/edges',d.tableCounts.entries+' / '+d.tableCounts.edges],
+        ['types/views/tabs',d.tableCounts.linkTypes+' / '+d.tableCounts.views+' / '+d.tableCounts.tabs],
+        ['duplicate tabs',d.duplicateTabs.dupes?('yes ('+d.duplicateTabs.dupes+')'):'none']
+      ];
+      rows.forEach(([k,v])=>{
+        const r=el('div','cfg-row');
+        r.appendChild(el('span','nm',k));
+        const vv=el('span','mt diag-val',v);
+        r.appendChild(vv); body.appendChild(r); });
+      if(d.duplicateTabs.groups.length){
+        body.appendChild(el('div','f-lbl','Duplicate groups'));
+        d.duplicateTabs.groups.forEach(g=>body.appendChild(el('div','f-created',
+          g.cls+' ×'+g.count+' ('+g.ids.join(', ')+')')));
+      }
+    });
+  },
+  snapshots(){
+    Modal.push((m,body)=>{
+      body.appendChild(el('div','f-lbl','Snapshots / restore'));
+      body.appendChild(el('div','f-created',
+        'Restore replaces local data, increments sync epoch, and then syncs that restore.'));
+      const epoch=el('div','f-created','Current epoch: '+(DB.settings.syncEpoch||0));
+      body.appendChild(epoch);
+      const box=el('div'); body.appendChild(box);
+      const renderFiles=(files)=>{
+        box.innerHTML='';
+        if(!files.length){ box.appendChild(el('div','empty','No snapshots found.')); return; }
+        files.forEach(f=>{
+          const rawLabel=String(f.name||f.id||'snapshot').replace(/\s+/g,' ');
+          const label=rawLabel.length>MAX_SNAPSHOT_LABEL_LENGTH
+            ? rawLabel.slice(0,MAX_SNAPSHOT_LABEL_LENGTH-1)+'…'
+            : rawLabel;
+          const r=el('div','cfg-row');
+          r.appendChild(el('span','nm',label));
+          r.appendChild(el('span','mt',fmtDT(f.modifiedTime||nowISO())));
+          const rs=el('button','mini','Restore');
+          rs.addEventListener('click',()=>{
+            if(!confirm('Restore snapshot "'+label+'" and overwrite local data?')) return;
+            Sync.restoreSnapshot(f).catch(()=>toast('Restore failed — try again')); });
+          r.appendChild(rs);
+          box.appendChild(r);
+        });
+      };
+      const refresh=()=>{
+        if(!Sync.configured()){ box.innerHTML=''; box.appendChild(el('div','empty','Set up Drive sync first.')); return; }
+        Sync.ensureToken(true).then(()=>Sync.listSnapshots()).then(renderFiles)
+          .catch(()=>toast('Could not load snapshots'));
+      };
+      const mk=el('button','bigbtn','Create snapshot now');
+      mk.addEventListener('click',()=>{
+        if(!Sync.configured()){ toast('Set up Drive sync first'); return; }
+        Sync.ensureToken(true).then(()=>Sync.createSnapshot()).then(()=>{
+          toast('Snapshot created'); refresh(); })
+          .catch(()=>toast('Snapshot failed — try again')); });
+      body.appendChild(mk);
+      const rf=el('button','bigbtn','Refresh snapshot list');
+      rf.addEventListener('click',refresh); body.appendChild(rf);
+      refresh();
+    });
+  } };
 document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
 $('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
   if(!Sync.configured()) Sync.setup(); else Sync.syncNow(true); });
 $('#m-syncoff').addEventListener('click',()=>{ $('#menu').classList.remove('on');
   Sync.setup(); });
+$('#m-diag').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.diagnostics(); });
+$('#m-restore').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.snapshots(); });
 $('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList.remove('on');});
 let importMode='merge';
 $('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
