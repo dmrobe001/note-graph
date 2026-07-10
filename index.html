@@ -1,0 +1,1245 @@
+<!doctype html>
+<!-- ================================================================
+     ==== SEC:HEADER (BEGIN) ========================================
+     CaptureLog v2 — the engine rebuild
+     Everything is an entry; relations are typed edges; "task",
+     "status", "interval" are conventions expressed as ordinary
+     entries, views, and tabs. The engine ships with a seed
+     configuration reproducing the Phase-1 workflow.
+
+     Schema (all references by persistent ID; only id/created_at
+     immutable; soft delete everywhere):
+       entries    id, created_at, ts, title, body, estimate_min, deleted
+       edges      id, from_id, to_id, type_id, created_at, deleted
+                  (child edge points child -> parent; ends edge
+                   points end-entry -> start-entry)
+       linkTypes  id, name, locked, deleted
+       views      id, name, cond_ids[] (ancestor conditions, ANDed),
+                  type_ids[] (containment link types), locked, deleted
+       tabs       id, cls, label, cfg{...}   cls ∈ create | interval |
+                  explore | exclusive | views | links | tabs
+       settings   allViewId, mem{fieldKey -> viewId}, migratedV1
+
+     SECTION MANIFEST (grep "SEC:"; every section has (BEGIN)/(END)):
+       SEC:HEADER              this manifest
+       SEC:STYLE               all CSS
+         SEC:STYLE/TOKENS        palette, type, radii
+         SEC:STYLE/BASE          resets, shell, typography
+         SEC:STYLE/RUNBAR        running-intervals bar
+         SEC:STYLE/NAV           scrollable bottom tab bar
+         SEC:STYLE/TREE          shared entry tree rows
+         SEC:STYLE/CHIPS         chips & badges
+         SEC:STYLE/FORMS         inputs, editor fields
+         SEC:STYLE/LISTS         config lists (views/links/tabs)
+         SEC:STYLE/MODAL         modal stack & scrim
+         SEC:STYLE/MISC          menu, toast, banner, empty
+       SEC:MARKUP              static DOM shell
+       SEC:APP                 all JavaScript
+         SEC:APP/UTIL            dom/date/format helpers
+         SEC:APP/STORE           persistence + flush-on-hide
+         SEC:APP/MODEL           CRUD for all five tables
+         SEC:APP/SEED            first-run seed configuration
+         SEC:APP/MIGRATE         v1 -> v2 data migration
+         SEC:APP/QUERY           containment, view matching, trees,
+                                 paths, search, running intervals
+         SEC:APP/EXPORT          NDJSON export / import
+         SEC:APP/UI              view layer
+           SEC:APP/UI/ROOT         tab bar, routing, rerender
+           SEC:APP/UI/RUNBAR       live running-interval summary
+           SEC:APP/UI/MODAL        modal stack infrastructure
+           SEC:APP/UI/TREE         shared tree renderer
+           SEC:APP/UI/CHIPS        shared chip builders
+           SEC:APP/UI/TAB_CREATE   "+" capture tab
+           SEC:APP/UI/TAB_INTERVAL "🕓" interval pair tab
+           SEC:APP/UI/TAB_EXPLORE  "🧭" browse/edit tab
+           SEC:APP/UI/TAB_EXCL     "☑" exclusive-swap tab
+           SEC:APP/UI/TAB_VIEWS    "🔎" view config tab
+           SEC:APP/UI/TAB_LINKS    "🔗" link-type config tab
+           SEC:APP/UI/TAB_TABS     "🕮" tab config tab
+           SEC:APP/UI/EDITOR       entry editor modal
+           SEC:APP/UI/PICK_ENTRY   entry picker (search+tree+add)
+           SEC:APP/UI/PICK_VIEW    view picker
+           SEC:APP/UI/PICK_TYPE    link-type picker
+           SEC:APP/UI/PANEL_EXCL   exclusive swap panel
+           SEC:APP/UI/EDIT_VIEW    view editor modal
+           SEC:APP/UI/EDIT_TAB     tab config modal
+           SEC:APP/UI/MENU         export/import/status menu
+         SEC:APP/BOOT            init
+     ==== SEC:HEADER (END) ========================================== -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#131518">
+<title>CaptureLog</title>
+<style>
+/* ==== SEC:STYLE (BEGIN) ============================================ */
+
+/* ==== SEC:STYLE/TOKENS (BEGIN) ==== */
+:root{
+  --bg:#131518; --surface:#1b1e23; --surface2:#23272e; --line:#2c313a;
+  --ink:#e7e4db; --muted:#8f939c; --faint:#5c616b;
+  --accent:#93b878; --accent-dim:#3a4a33; --amber:#d9a44a; --danger:#c96f5e;
+  --r:12px;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+/* ==== SEC:STYLE/TOKENS (END) ==== */
+
+/* ==== SEC:STYLE/BASE (BEGIN) ==== */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 var(--sans);
+  -webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
+#app{display:flex;flex-direction:column;height:100dvh}
+#view{flex:1;overflow-y:auto;padding:12px 14px calc(76px + env(safe-area-inset-bottom))}
+h2.viewtitle{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:6px 2px 12px;display:flex;align-items:center;gap:8px}
+h2.viewtitle .spacer{flex:1}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
+input,textarea,select{font:inherit;color:var(--ink);background:var(--surface2);
+  border:1px solid var(--line);border-radius:var(--r);outline:none}
+input:focus,textarea:focus{border-color:var(--accent-dim)}
+::placeholder{color:var(--faint)}
+.mono{font-family:var(--mono)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* ==== SEC:STYLE/BASE (END) ==== */
+
+/* ==== SEC:STYLE/RUNBAR (BEGIN) ==== */
+#runbar{display:none;align-items:center;gap:8px;padding:9px 14px;
+  padding-top:calc(9px + env(safe-area-inset-top));overflow-x:auto;
+  background:linear-gradient(180deg,#182016,var(--bg));border-bottom:1px solid var(--accent-dim)}
+#runbar.on{display:flex}
+#runbar .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+  flex-shrink:0;animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+#runbar .rchip{display:inline-flex;gap:7px;align-items:center;white-space:nowrap;
+  border:1px solid var(--accent-dim);border-radius:999px;padding:4px 11px;font-size:13px}
+#runbar .rchip .el{font-family:var(--mono);color:var(--accent);font-size:12px}
+/* ==== SEC:STYLE/RUNBAR (END) ==== */
+
+/* ==== SEC:STYLE/NAV (BEGIN) ==== */
+#tabs{position:fixed;bottom:0;left:0;right:0;display:flex;overflow-x:auto;
+  background:color-mix(in srgb,var(--bg) 88%,black);backdrop-filter:blur(8px);
+  border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+#tabs button{flex:1 0 60px;padding:11px 4px 9px;color:var(--faint);font-size:11px;
+  display:flex;flex-direction:column;align-items:center;gap:3px;white-space:nowrap}
+#tabs button .ico{font-size:20px;line-height:1}
+#tabs button.active{color:var(--ink)}
+#tabs button.active .ico{filter:none;color:var(--accent)}
+/* ==== SEC:STYLE/NAV (END) ==== */
+
+/* ==== SEC:STYLE/TREE (BEGIN) ==== */
+.trow{display:flex;align-items:center;gap:2px;padding:8px 6px;border-radius:10px;width:100%;text-align:left}
+.trow:active{background:var(--surface)}
+.trow .chev{width:28px;flex-shrink:0;text-align:center;color:var(--faint);font-size:13px}
+.trow .nm{flex:1;min-width:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow .nm.untitled{color:var(--muted);font-style:italic}
+.trow .nm.hit{color:var(--accent)}
+.trow .cnt{font-family:var(--mono);font-size:11px;color:var(--faint);padding:0 4px}
+.trow .tbtn{width:32px;height:32px;flex-shrink:0;color:var(--faint);font-size:14px;
+  border:1px solid transparent;border-radius:8px}
+.trow .tbtn.add{color:var(--accent)}
+.trow .tbtn.end{color:var(--accent);border-color:var(--accent-dim);font-size:12px;width:auto;padding:0 10px}
+.flatrow{display:block;width:100%;text-align:left;padding:8px 6px;border-radius:10px}
+.flatrow:active{background:var(--surface)}
+.flatrow .path{font-family:var(--mono);font-size:11px;color:var(--faint);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.flatrow .line{display:flex;gap:8px;align-items:baseline}
+.flatrow .nm{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.flatrow .tm{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto;flex-shrink:0}
+/* ==== SEC:STYLE/TREE (END) ==== */
+
+/* ==== SEC:STYLE/CHIPS (BEGIN) ==== */
+.chip{display:inline-flex;align-items:center;gap:6px;max-width:60vw;
+  background:var(--surface2);border:1px solid var(--line);border-radius:999px;
+  padding:5px 11px;font-size:13px;color:var(--ink);white-space:nowrap}
+.chip .nm{overflow:hidden;text-overflow:ellipsis}
+.chip.linked{border-color:var(--accent-dim);background:#20261e}
+.chip.add{color:var(--muted);border-style:dashed}
+.chip.sel{border-color:var(--accent);background:#243020}
+.chip .ty{font-family:var(--mono);font-size:10px;color:var(--faint);
+  border-left:1px solid var(--line);padding-left:6px}
+.chip .x{color:var(--faint);font-size:15px;padding-left:2px}
+.chiprow{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+/* ==== SEC:STYLE/CHIPS (END) ==== */
+
+/* ==== SEC:STYLE/FORMS (BEGIN) ==== */
+.f-ts{display:flex;gap:10px;align-items:baseline;margin:2px 0 10px;flex-wrap:wrap}
+.f-ts input{padding:7px 9px;font-family:var(--mono);font-size:13px;color-scheme:dark;background:transparent;border-color:transparent}
+.f-ts input:focus{border-color:var(--accent-dim);background:var(--surface2)}
+.f-created{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.f-title{width:100%;padding:10px 12px;font-size:15px;margin-bottom:8px;background:transparent;border:1px dashed var(--line)}
+.f-title:focus{border-style:solid}
+.f-body{width:100%;min-height:30dvh;padding:12px;font-size:17px;line-height:1.5;resize:vertical}
+.f-body.short{min-height:80px;font-size:15px}
+.f-lbl{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:16px 2px 7px}
+.f-field{padding:10px 12px;border:1px dashed var(--line);border-radius:var(--r);
+  color:var(--faint);font-size:14px;width:100%;text-align:left}
+.f-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.bigbtn{margin-top:14px;width:100%;padding:12px;border:1px solid var(--line);
+  border-radius:var(--r);color:var(--muted);font-size:14px;background:var(--surface)}
+.bigbtn.go{color:var(--accent);border-color:var(--accent-dim)}
+.dangerbtn{margin-top:18px;color:var(--danger);font-size:13px;padding:9px 0}
+/* ==== SEC:STYLE/FORMS (END) ==== */
+
+/* ==== SEC:STYLE/LISTS (BEGIN) ==== */
+.cfg-row{display:flex;align-items:center;gap:10px;padding:11px 8px;border-radius:var(--r);width:100%;text-align:left}
+.cfg-row:active{background:var(--surface)}
+.cfg-row .nm{flex:1;min-width:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cfg-row .mt{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0}
+.cfg-row .mini{width:32px;height:32px;flex-shrink:0;border:1px solid var(--line);
+  border-radius:8px;color:var(--muted);font-size:14px}
+.sorttog{font-family:var(--mono);font-size:11px;color:var(--muted);
+  border:1px solid var(--line);border-radius:8px;padding:5px 10px}
+/* ==== SEC:STYLE/LISTS (END) ==== */
+
+/* ==== SEC:STYLE/MODAL (BEGIN) ==== */
+#scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:40}
+#scrim.on{display:block}
+.modal{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--surface);
+  border-radius:18px 18px 0 0;border-top:1px solid var(--line);
+  max-height:90dvh;display:flex;flex-direction:column}
+.modal .grip{width:38px;height:4px;border-radius:2px;background:var(--line);margin:10px auto 4px;flex-shrink:0}
+.modal .mbody{overflow-y:auto;padding:8px 16px calc(24px + env(safe-area-inset-bottom))}
+.modal .mtop{display:flex;gap:10px;padding:6px 16px 10px;align-items:center;flex-shrink:0}
+.modal .mtop input{flex:1;padding:9px 12px;font-size:16px}
+.modal .mtop .cancel{color:var(--muted);font-size:14px;flex-shrink:0}
+/* ==== SEC:STYLE/MODAL (END) ==== */
+
+/* ==== SEC:STYLE/MISC (BEGIN) ==== */
+#membanner{display:none;background:#3a2f1a;color:var(--amber);font-size:12px;padding:7px 14px;text-align:center}
+#membanner.on{display:block}
+#menu{position:fixed;right:12px;top:52px;z-index:60;background:var(--surface2);
+  border:1px solid var(--line);border-radius:var(--r);display:none;min-width:220px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5)}
+#menu.on{display:block}
+#menu button{display:block;width:100%;text-align:left;padding:12px 15px;font-size:14px}
+#menu button:active{background:var(--surface)}
+#menu .note{padding:8px 15px 11px;font-size:11px;color:var(--faint);border-top:1px solid var(--line)}
+.iconbtn{color:var(--muted);font-size:19px;padding:2px 8px}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:70;
+  background:var(--surface2);border:1px solid var(--line);border-radius:999px;
+  padding:8px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+#toast.on{opacity:1}
+.empty{color:var(--faint);text-align:center;padding:40px 20px;font-size:14px}
+/* ==== SEC:STYLE/MISC (END) ==== */
+
+/* ==== SEC:STYLE (END) ============================================== */
+</style>
+</head>
+<body>
+<!-- ==== SEC:MARKUP (BEGIN) ========================================== -->
+<div id="app">
+  <div id="membanner">Memory-only mode — storage unavailable here. Export from ⋯ to keep data.</div>
+  <div id="runbar"><span class="dot"></span></div>
+  <div id="view"></div>
+  <nav id="tabs"></nav>
+</div>
+<div id="scrim"></div>
+<div id="mstack"></div>
+<div id="menu">
+  <button id="m-export">Export NDJSON</button>
+  <button id="m-import">Import NDJSON…</button>
+  <div class="note" id="m-note"></div>
+</div>
+<input type="file" id="importfile" accept=".ndjson,.txt,.json" style="display:none">
+<div id="toast"></div>
+<!-- ==== SEC:MARKUP (END) ============================================ -->
+
+<script>
+// ==== SEC:APP (BEGIN) =================================================
+
+// ==== SEC:APP/UTIL (BEGIN) ====
+const $  = s => document.querySelector(s);
+const el = (tag, cls, txt) => { const e=document.createElement(tag);
+  if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
+const nowISO = () => new Date().toISOString();
+function fmtClock(iso){ return new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); }
+function fmtDay(iso){ return new Date(iso).toLocaleDateString([],{year:'numeric',month:'short',day:'numeric'}); }
+function fmtDT(iso){ return fmtDay(iso)+' '+fmtClock(iso); }
+function fmtDur(ms){ if(ms<0)ms=0; const m=Math.round(ms/60000);
+  if(m<60) return m+'m'; const h=Math.floor(m/60),r=m%60; return r? h+'h '+r+'m' : h+'h'; }
+function toLocalInput(iso){ const d=new Date(iso),p=n=>String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
+function fromLocalInput(v){ const d=new Date(v); return isNaN(d)?null:d.toISOString(); }
+function disp(e){ return e.title || (e.body||'').split('\n')[0].slice(0,60) || '· '+fmtClock(e.created_at); }
+let toastTimer=null;
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),1700); }
+function fuzzy(q,s){ q=q.toLowerCase(); s=(s||'').toLowerCase();
+  if(!q) return 0;
+  const i=s.indexOf(q); if(i>=0) return 10-Math.min(9,i*0.5);
+  let j=0; for(const ch of s){ if(ch===q[j])j++; if(j===q.length) return 2; }
+  return -1; }
+// ==== SEC:APP/UTIL (END) ====
+
+// ==== SEC:APP/STORE (BEGIN) ====
+// localStorage with in-memory fallback + loud banner (P2). Saves are
+// debounced 120ms; saveNow() flushes, and is wired to visibilitychange
+// and pagehide so a pocketed or dying phone commits the latest keystrokes.
+const STORE_KEY='capturelog.v2';
+const Store={ memoryOnly:false, _mem:null,
+  read(k){ try{ return localStorage.getItem(k); }catch(e){ this.memoryOnly=true; return k===STORE_KEY?this._mem:null; } },
+  write(str){ try{ localStorage.setItem(STORE_KEY,str); this.memoryOnly=false; }
+    catch(e){ this.memoryOnly=true; this._mem=str; }
+    $('#membanner').classList.toggle('on',this.memoryOnly); } };
+
+let DB={ v:2, seq:1, eseq:1, tseq:1, vseq:1, bseq:1,
+  entries:[], edges:[], linkTypes:[], views:[], tabs:[],
+  settings:{ allViewId:null, mem:{}, migratedV1:false } };
+
+let saveTimer=null;
+function save(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveNow,120); }
+function saveNow(){ clearTimeout(saveTimer); Store.write(JSON.stringify(DB)); }
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) saveNow(); });
+window.addEventListener('pagehide',saveNow);
+function load(){ const raw=Store.read(STORE_KEY);
+  if(raw){ try{ DB=JSON.parse(raw); }catch(e){ console.error('load failed',e); } }
+  $('#membanner').classList.toggle('on',Store.memoryOnly); }
+// ==== SEC:APP/STORE (END) ====
+
+// ==== SEC:APP/MODEL (BEGIN) ====
+// CRUD. Soft delete everywhere; id + created_at immutable (P4).
+function createEntry(f={}){ const t=nowISO();
+  const e={id:DB.seq++,created_at:t,ts:t,title:null,body:null,estimate_min:null,deleted:0,...f};
+  DB.entries.push(e); save(); return e; }
+function getEntry(id){ return DB.entries.find(e=>e.id===id&&!e.deleted); }
+function updateEntry(id,p){ const e=getEntry(id); if(!e)return null;
+  delete p.id; delete p.created_at; Object.assign(e,p); save(); return e; }
+function deleteEntry(id){ const e=getEntry(id); if(!e)return;
+  e.deleted=1; DB.edges.forEach(d=>{ if(d.from_id===id||d.to_id===id)d.deleted=1; }); save(); }
+
+function addEdge(from_id,to_id,type_id){ if(from_id===to_id) return null;
+  const dup=DB.edges.find(d=>!d.deleted&&d.from_id===from_id&&d.to_id===to_id&&d.type_id===type_id);
+  if(dup) return dup;
+  const d={id:DB.eseq++,from_id,to_id,type_id,created_at:nowISO(),deleted:0};
+  DB.edges.push(d); save(); return d; }
+function removeEdge(id){ const d=DB.edges.find(x=>x.id===id); if(d){d.deleted=1;save();} }
+function retypeEdge(id,type_id){ const d=DB.edges.find(x=>x.id===id&&!x.deleted); if(d){d.type_id=type_id;save();} }
+const liveEdges=()=>DB.edges.filter(d=>!d.deleted);
+
+function createLinkType(name,locked=0){ const t={id:DB.tseq++,name,locked,deleted:0};
+  DB.linkTypes.push(t); save(); return t; }
+function getType(id){ return DB.linkTypes.find(t=>t.id===id&&!t.deleted); }
+const liveTypes=()=>DB.linkTypes.filter(t=>!t.deleted);
+
+function createView(f){ const v={id:DB.vseq++,name:'view',cond_ids:[],type_ids:[],locked:0,deleted:0,...f};
+  DB.views.push(v); save(); return v; }
+function getView(id){ return DB.views.find(v=>v.id===id&&!v.deleted); }
+const liveViews=()=>DB.views.filter(v=>!v.deleted);
+function fallbackView(){ return getView(DB.settings.allViewId)||liveViews()[0]; }
+
+function createTab(cls,label,cfg={}){ const t={id:DB.bseq++,cls,label,cfg,deleted:0};
+  DB.tabs.push(t); save(); return t; }
+function getTab(id){ return DB.tabs.find(t=>t.id===id&&!t.deleted); }
+const liveTabs=()=>DB.tabs.filter(t=>!t.deleted);
+
+// per-field view memory: fieldKey -> view id
+const Mem={
+  get(key,fb){ const id=DB.settings.mem[key]; return getView(id)||getView(fb)||fallbackView(); },
+  set(key,viewId){ DB.settings.mem[key]=viewId; save(); } };
+// ==== SEC:APP/MODEL (END) ====
+
+// ==== SEC:APP/SEED (BEGIN) ====
+// First run: seed link types, keystone entries, views, and the default
+// tab set. Everything seeded is ordinary data — retitle, reconfigure,
+// or (mostly) delete at will. "All" and the engine tabs are locked.
+function seed(){
+  if(DB.linkTypes.length||DB.entries.length) return;
+  const child=createLinkType('child',1);
+  const ends =createLinkType('ends',1);
+  const status=createEntry({title:'Status'});
+  const active=createEntry({title:'Active'});
+  const someday=createEntry({title:'Someday'});
+  const done=createEntry({title:'Done'});
+  const dead=createEntry({title:'Dead'});
+  [active,someday,done,dead].forEach(s=>addEdge(s.id,status.id,child.id));
+  const intervals=createEntry({title:'Intervals'});
+  const all=createView({name:'All',cond_ids:[],type_ids:[child.id],locked:1});
+  const vAct=createView({name:'Active',cond_ids:[active.id],type_ids:[child.id]});
+  const vStat=createView({name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
+  DB.settings.allViewId=all.id;
+  createTab('create','＋',{});
+  createTab('interval','🕓',{root_id:intervals.id,link_type_id:child.id,end_type_id:ends.id});
+  createTab('explore','🧭',{view_id:all.id});
+  createTab('exclusive','☑',{list_view_id:vAct.id,swap_view_id:vStat.id,link_type_id:child.id});
+  createTab('views','🔎',{});
+  createTab('links','🔗',{});
+  createTab('tabs','🕮',{});
+  save();
+}
+// ==== SEC:APP/SEED (END) ====
+
+// ==== SEC:APP/MIGRATE (BEGIN) ====
+// One-shot import of capturelog.v1 data (the Phase-1 build), run after
+// seed so keystones exist. v1 'session' edges become child links from
+// start->task; 'session_end' become ends links; task_state becomes a
+// child link to the matching Status entry. v1 data is left untouched.
+function migrateV1(){
+  if(DB.settings.migratedV1) return;
+  DB.settings.migratedV1=true;
+  const raw=Store.read('capturelog.v1'); if(!raw){ save(); return; }
+  let old; try{ old=JSON.parse(raw); }catch(e){ save(); return; }
+  if(!old.entries||!old.entries.length){ save(); return; }
+  const child=liveTypes().find(t=>t.name==='child'), ends=liveTypes().find(t=>t.name==='ends');
+  const statusByName={}; ['Active','Someday','Done','Dead'].forEach(n=>{
+    statusByName[n.toLowerCase()]=DB.entries.find(e=>!e.deleted&&e.title===n); });
+  const idMap={};
+  old.entries.forEach(oe=>{
+    const ne=createEntry({title:oe.title||null,body:oe.body||null,
+      estimate_min:oe.estimate_min||null,deleted:oe.deleted?1:0});
+    ne.ts=oe.ts||ne.ts; ne.created_at=oe.created_at||ne.created_at;   // preserve history
+    idMap[oe.id]=ne.id;
+    if(oe.is_task&&oe.task_state&&statusByName[oe.task_state])
+      addEdge(ne.id,statusByName[oe.task_state].id,child.id);
+  });
+  (old.edges||[]).forEach(od=>{
+    const f=idMap[od.from_id],t=idMap[od.to_id]; if(!f||!t)return;
+    const type = od.type==='session_end'?ends.id:child.id;   // session & child -> child
+    const d=addEdge(f,t,type); if(d&&od.deleted)d.deleted=1;
+  });
+  save(); toast('Imported '+old.entries.length+' entries from v1');
+}
+// ==== SEC:APP/MIGRATE (END) ====
+
+// ==== SEC:APP/QUERY (BEGIN) ====
+// All derived state. Containment is a per-view property: traversals
+// take the view's type_ids. Nothing here writes.
+function typeIdsOf(view){ return (view&&view.type_ids&&view.type_ids.length)
+  ? view.type_ids : liveTypes().filter(t=>t.name==='child').map(t=>t.id); }
+
+function childrenOf(nodeId,typeIds){                 // edges child->parent
+  return liveEdges().filter(d=>d.to_id===nodeId&&typeIds.includes(d.type_id))
+    .map(d=>getEntry(d.from_id)).filter(Boolean); }
+function parentEdgesOf(id){                          // all outgoing typed links
+  return liveEdges().filter(d=>d.from_id===id)
+    .map(d=>({edge:d,node:getEntry(d.to_id),type:getType(d.type_id)}))
+    .filter(x=>x.node&&x.type); }
+function parentsOf(id,typeIds){
+  return parentEdgesOf(id).filter(x=>typeIds.includes(x.edge.type_id)).map(x=>x.node); }
+function backlinksOf(id){
+  return liveEdges().filter(d=>d.to_id===id)
+    .map(d=>({edge:d,node:getEntry(d.from_id),type:getType(d.type_id)}))
+    .filter(x=>x.node&&x.type); }
+
+function descendantSet(rootId,typeIds){              // excludes the root
+  const out=new Set(),stack=[rootId];
+  while(stack.length){ const cur=stack.pop();
+    childrenOf(cur,typeIds).forEach(c=>{ if(!out.has(c.id)){out.add(c.id);stack.push(c.id);} }); }
+  return out; }
+
+// A view's matches: live entries that are descendants of EVERY condition
+// (pure conjunction). No conditions = everything.
+function viewMatches(view){
+  const typeIds=typeIdsOf(view);
+  const live=DB.entries.filter(e=>!e.deleted);
+  if(!view||!view.cond_ids||!view.cond_ids.length) return new Set(live.map(e=>e.id));
+  const sets=view.cond_ids.map(c=>descendantSet(c,typeIds));
+  const out=new Set();
+  live.forEach(e=>{ if(sets.every(s=>s.has(e.id))) out.add(e.id); });
+  return out; }
+
+// Tree structure within a match set: roots = matches with no matched
+// parent; children restricted to matches. Downward-closed for ancestor
+// conditions, so the tree is complete. Cycle-safe via render depth cap.
+function matchedParents(id,matched,typeIds){
+  return parentsOf(id,typeIds).filter(p=>matched.has(p.id)); }
+function treeRoots(matched,typeIds){
+  const roots=[];
+  matched.forEach(id=>{ const e=getEntry(id); if(!e)return;
+    if(!matchedParents(id,matched,typeIds).length) roots.push(e); });
+  return roots.sort((a,b)=>b.ts.localeCompare(a.ts)); }
+function matchedChildren(id,matched,typeIds){
+  return childrenOf(id,typeIds).filter(c=>matched.has(c.id))
+    .sort((a,b)=>a.created_at.localeCompare(b.created_at)); }   // stable sibling order
+
+// Canonical path (for flat date-sorted lists): shortest ancestor chain
+// within the match set, BFS upward, parents ordered by edge age.
+function canonicalPath(id,matched,typeIds){
+  const pred={},q=[id],seen=new Set([id]); let top=null;
+  while(q.length){ const cur=q.shift();
+    const ps=matchedParents(cur,matched,typeIds);
+    if(!ps.length){ top=cur; break; }
+    for(const p of ps){ if(!seen.has(p.id)){ seen.add(p.id); pred[p.id]=cur; q.push(p.id); } } }
+  if(top===null||top===id) return [];
+  const path=[]; let cur=top;
+  while(cur!==id&&cur!==undefined){ path.push(getEntry(cur)); cur=pred[cur]; }
+  return path.filter(Boolean); }
+
+// Search within a view: fuzzy over title (or first line for untitled),
+// ranked by score, titledness, inbound links, recency of being linked.
+function inboundCount(id){ return liveEdges().filter(d=>d.to_id===id).length; }
+function lastLinkedAt(id){ let t='';
+  liveEdges().forEach(d=>{ if(d.to_id===id&&d.created_at>t)t=d.created_at; }); return t; }
+function searchInView(q,view){
+  const matched=viewMatches(view);
+  return DB.entries.filter(e=>!e.deleted&&matched.has(e.id))
+    .map(e=>({e,sc:fuzzy(q,e.title?e.title:(e.body||''))}))
+    .filter(x=>x.sc>=0)
+    .sort((a,b)=>(b.sc-a.sc)||((b.e.title?1:0)-(a.e.title?1:0))
+      ||(inboundCount(b.e.id)-inboundCount(a.e.id))
+      ||lastLinkedAt(b.e.id).localeCompare(lastLinkedAt(a.e.id))); }
+
+// Running intervals for an interval tab: current containment-children
+// of its root. Ending one moves it out of the root; its start remains
+// queryable forever via the ends edge.
+function runningFor(tab){ const c=tab.cfg;
+  if(!c.root_id||!getEntry(c.root_id)) return [];
+  return childrenOf(c.root_id,[c.link_type_id])
+    .sort((a,b)=>a.ts.localeCompare(b.ts)); }
+function endEntryOf(startId,endTypeId){
+  const d=liveEdges().find(x=>x.to_id===startId&&x.type_id===endTypeId);
+  return d?getEntry(d.from_id):null; }
+// ==== SEC:APP/QUERY (END) ====
+
+// ==== SEC:APP/EXPORT (BEGIN) ====
+// NDJSON, one typed object per line. Lossless over all five tables.
+function exportNDJSON(){
+  const L=[JSON.stringify({_t:'meta',v:2,seq:DB.seq,eseq:DB.eseq,tseq:DB.tseq,
+    vseq:DB.vseq,bseq:DB.bseq,settings:DB.settings,exported:nowISO()})];
+  const dump=(arr,t)=>arr.forEach(o=>L.push(JSON.stringify({_t:t,...o})));
+  dump(DB.entries,'entry'); dump(DB.edges,'edge'); dump(DB.linkTypes,'linktype');
+  dump(DB.views,'view'); dump(DB.tabs,'tab');
+  const blob=new Blob([L.join('\n')],{type:'application/x-ndjson'});
+  const a=el('a'); a.href=URL.createObjectURL(blob);
+  a.download='capturelog-'+new Date().toISOString().slice(0,10)+'.ndjson';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('Exported '+DB.entries.length+' entries'); }
+function importNDJSON(text){
+  const nd={v:2,seq:1,eseq:1,tseq:1,vseq:1,bseq:1,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
+    settings:{allViewId:null,mem:{},migratedV1:true}};
+  for(const line of text.split('\n')){ if(!line.trim())continue;
+    let o; try{o=JSON.parse(line);}catch(e){toast('Import failed: bad line');return;}
+    const t=o._t; delete o._t;
+    if(t==='meta'){ Object.assign(nd,{seq:o.seq,eseq:o.eseq,tseq:o.tseq,vseq:o.vseq,bseq:o.bseq});
+      if(o.settings)nd.settings=o.settings; }
+    else if(t==='entry')nd.entries.push(o); else if(t==='edge')nd.edges.push(o);
+    else if(t==='linktype')nd.linkTypes.push(o); else if(t==='view')nd.views.push(o);
+    else if(t==='tab')nd.tabs.push(o); }
+  if(!confirm('Replace current data ('+DB.entries.length+' entries) with import ('+nd.entries.length+' entries)?'))return;
+  DB=nd; saveNow(); UI.rerender(); toast('Imported'); }
+// ==== SEC:APP/EXPORT (END) ====
+
+// ==== SEC:APP/UI (BEGIN) ==============================================
+const UI={};
+
+// ==== SEC:APP/UI/ROOT (BEGIN) ====
+// The tab bar is data (DB.tabs). Tapping the active create tab again
+// commits the current draft and starts a new one, per spec.
+UI.tabId=null;
+UI.state={};                       // per-tab runtime state (drafts, expand sets)
+function tabState(id){ return UI.state[id]||(UI.state[id]={}); }
+
+UI.rerender=function(){
+  renderRunbar(); renderTabbar();
+  const v=$('#view'); v.innerHTML='';
+  const tab=getTab(UI.tabId)||liveTabs()[0]; if(!tab){return;}
+  UI.tabId=tab.id;
+  ({create:renderCreate,interval:renderInterval,explore:renderExplore,
+    exclusive:renderExclusive,views:renderViews,links:renderLinks,
+    tabs:renderTabs})[tab.cls](v,tab);
+};
+function renderTabbar(){
+  const bar=$('#tabs'); bar.innerHTML='';
+  liveTabs().forEach(t=>{
+    const b=el('button',t.id===UI.tabId?'active':'');
+    b.appendChild(el('span','ico',t.label||'·'));
+    b.appendChild(el('span',null,{create:'new',interval:'clock',explore:'explore',
+      exclusive:'set',views:'views',links:'links',tabs:'tabs'}[t.cls]));
+    b.addEventListener('click',()=>{
+      if(t.cls==='create'&&UI.tabId===t.id){ tabState(t.id).draftId=null; }  // recommit gesture
+      UI.tabId=t.id; UI.rerender(); });
+    bar.appendChild(b); });
+}
+// ==== SEC:APP/UI/ROOT (END) ====
+
+// ==== SEC:APP/UI/RUNBAR (BEGIN) ====
+// Slim live summary of every running interval across all interval tabs;
+// tapping a chip jumps to its tab. Ticks every 30s.
+function renderRunbar(){
+  const bar=$('#runbar');
+  [...bar.querySelectorAll('.rchip')].forEach(x=>x.remove());
+  let any=false;
+  liveTabs().filter(t=>t.cls==='interval').forEach(t=>{
+    runningFor(t).forEach(e=>{ any=true;
+      const c=el('button','rchip');
+      c.appendChild(el('span',null,disp(e)));
+      c.appendChild(el('span','el',fmtDur(Date.now()-new Date(e.ts))));
+      c.addEventListener('click',()=>{ UI.tabId=t.id; UI.rerender(); });
+      bar.appendChild(c); }); });
+  bar.classList.toggle('on',any);
+}
+setInterval(renderRunbar,30000);
+// ==== SEC:APP/UI/RUNBAR (END) ====
+
+// ==== SEC:APP/UI/MODAL (BEGIN) ====
+// A stack of bottom sheets; editors can open editors (the 🔗+ flow).
+const Modal={ stack:[],
+  push(render){ this.stack.push(render); this.render(); },
+  pop(){ this.stack.pop(); this.render(); if(!this.stack.length)UI.rerender(); },
+  closeAll(){ this.stack=[]; this.render(); UI.rerender(); },
+  refresh(){ this.render(); },
+  render(){
+    const host=$('#mstack'); host.innerHTML='';
+    $('#scrim').classList.toggle('on',!!this.stack.length);
+    this.stack.forEach((r,i)=>{
+      const m=el('div','modal'); m.style.zIndex=41+i;
+      m.appendChild(el('div','grip'));
+      const body=el('div','mbody'); m.appendChild(body);
+      r(m,body); host.appendChild(m); }); } };
+$('#scrim').addEventListener('click',()=>Modal.pop());
+// ==== SEC:APP/UI/MODAL (END) ====
+
+// ==== SEC:APP/UI/TREE (BEGIN) ====
+// Shared collapsible entry tree: view-filtered, search-pruned, stable
+// sibling order, per-context expand set, ⇊ recursive expand, and the
+// per-row ＋ that creates the typed search text as a child of that row.
+// opts: {view, q, expand:Set, onPick(e), extras(e)->[nodes], addType}
+function renderTree(container,opts){
+  const view=opts.view, typeIds=typeIdsOf(view);
+  const matched=viewMatches(view);
+  const q=(opts.q||'').trim();
+  let include=matched, hits=null;
+  if(q){ hits=new Set();
+    matched.forEach(id=>{ const e=getEntry(id);
+      if(e&&fuzzy(q,e.title?e.title:(e.body||''))>=0) hits.add(id); });
+    include=new Set(hits);
+    hits.forEach(id=>{                            // pull in ancestors of hits
+      const stack=[id],seen=new Set([id]);
+      while(stack.length){ const cur=stack.pop();
+        matchedParents(cur,matched,typeIds).forEach(p=>{
+          if(!seen.has(p.id)){ seen.add(p.id); include.add(p.id); stack.push(p.id); } }); } }); }
+
+  const roots=treeRoots(include,typeIds);
+  if(!roots.length){ container.appendChild(el('div','empty',
+    q?'No matches. Tap ＋ on a row to create “'+q+'” there.':'Nothing here yet.')); return; }
+
+  const draw=(e,depth,seen)=>{
+    if(seen.has(e.id)||depth>12) return;          // DAG/cycle guard
+    seen.add(e.id);
+    const kids=matchedChildren(e.id,include,typeIds);
+    const open=q? true : opts.expand.has(e.id);   // search auto-expands
+    const row=el('div','trow'); row.style.paddingLeft=(6+depth*18)+'px';
+    const chev=el('button','chev',kids.length?(open?'▾':'▸'):'·');
+    if(kids.length) chev.addEventListener('click',ev=>{ ev.stopPropagation();
+      open?opts.expand.delete(e.id):opts.expand.add(e.id); opts.refresh(); });
+    row.appendChild(chev);
+    const nm=el('button','nm'+(e.title?'':' untitled')+((hits&&hits.has(e.id))?' hit':''),disp(e));
+    nm.style.textAlign='left';
+    nm.addEventListener('click',()=>opts.onPick(e));
+    row.appendChild(nm);
+    if(kids.length) row.appendChild(el('span','cnt',String(kids.length)));
+    if(kids.length&&!open){ const dd=el('button','tbtn','⇊'); dd.title='Expand all';
+      dd.addEventListener('click',ev=>{ ev.stopPropagation();
+        const st=[e.id]; while(st.length){ const c=st.pop(); opts.expand.add(c);
+          matchedChildren(c,include,typeIds).forEach(k=>st.push(k.id)); }
+        opts.refresh(); });
+      row.appendChild(dd); }
+    if(q){ const add=el('button','tbtn add','＋'); add.title='Create “'+q+'” under this';
+      add.addEventListener('click',ev=>{ ev.stopPropagation();
+        const n=createEntry({title:q});
+        addEdge(n.id,e.id,opts.addType||typeIds[0]);
+        toast('Created under '+disp(e)); opts.refresh(); });
+      row.appendChild(add); }
+    if(opts.extras) opts.extras(e).forEach(x=>row.appendChild(x));
+    container.appendChild(row);
+    if(open) kids.forEach(k=>draw(k,depth+1,seen));
+    seen.delete(e.id);
+  };
+  roots.forEach(r=>draw(r,0,new Set()));
+}
+// ==== SEC:APP/UI/TREE (END) ====
+
+// ==== SEC:APP/UI/CHIPS (BEGIN) ====
+// Chip builders shared by editor / create tab / config screens.
+function entryChip(e,{onTap,onRemove,typeLabel,onTypeTap,cls}={}){
+  const c=el('button','chip '+(cls||''));
+  c.appendChild(el('span','nm',disp(e)));
+  if(typeLabel){ const t=el('span','ty',typeLabel);
+    if(onTypeTap) t.addEventListener('click',ev=>{ev.stopPropagation();onTypeTap();});
+    c.appendChild(t); }
+  if(onRemove){ const x=el('span','x','×');
+    x.addEventListener('click',ev=>{ev.stopPropagation();onRemove();}); c.appendChild(x); }
+  if(onTap) c.addEventListener('click',onTap);
+  return c; }
+// links field: existing typed links as chips + a "link…" adder that runs
+// picker (view remembered per fieldKey) then applies the field's
+// remembered link type silently; tap the type label on a chip to retype.
+function linksField(container,entryId,fieldKey,afterChange){
+  const wrap=el('div','chiprow');
+  parentEdgesOf(entryId).forEach(({edge,node,type})=>{
+    wrap.appendChild(entryChip(node,{cls:'linked',
+      typeLabel:type.name,
+      onTypeTap:()=>pickType(t=>{retypeEdge(edge.id,t.id);afterChange();}),
+      onRemove:()=>{removeEdge(edge.id);afterChange();},
+      onTap:()=>openEditor(node.id)})); });
+  const add=el('button','chip add','⌕ link…');
+  add.addEventListener('click',()=>{
+    pickEntry(fieldKey,e=>{
+      const tKey=fieldKey+'.type';
+      const tid=DB.settings.mem[tKey]||liveTypes().find(t=>t.name==='child').id;
+      addEdge(entryId,e.id,tid); afterChange(); }); });
+  wrap.appendChild(add);
+  container.appendChild(wrap); }
+// ==== SEC:APP/UI/CHIPS (END) ====
+
+// ==== SEC:APP/UI/TAB_CREATE (BEGIN) ====
+// "＋": entering the tab creates a committed, timestamped entry at once
+// (spec: on open and on re-tap). Defaults from tab cfg are applied at
+// birth. Edits stream straight into the row.
+function ensureDraft(tab){
+  const st=tabState(tab.id);
+  if(st.draftId&&getEntry(st.draftId)) return getEntry(st.draftId);
+  const d=tab.cfg.def||{};
+  const e=createEntry({title:d.title||null,body:d.body||null});
+  (d.links||[]).forEach(l=>{ if(getEntry(l.to))addEdge(e.id,l.to,l.type); });
+  st.draftId=e.id; return e; }
+
+function renderCreate(v,tab){
+  const e=ensureDraft(tab);
+  const tsrow=el('div','f-ts');
+  const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
+  ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value); if(iso)updateEntry(e.id,{ts:iso});});
+  tsrow.appendChild(ti);
+  tsrow.appendChild(el('span','f-created','committed '+fmtClock(e.created_at)));
+  v.appendChild(tsrow);
+
+  const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
+  title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
+  v.appendChild(title);
+
+  const body=el('textarea','f-body'); body.value=e.body||'';
+  body.addEventListener('input',()=>updateEntry(e.id,{body:body.value||null}));
+  v.appendChild(body);
+
+  v.appendChild(el('div','f-lbl','Links'));
+  const lf=el('div'); v.appendChild(lf);
+  linksField(lf,e.id,'tab'+tab.id+'.links',()=>UI.rerender());
+
+  const nb=el('button','bigbtn','New entry (current is saved)');
+  nb.addEventListener('click',()=>{ tabState(tab.id).draftId=null; UI.rerender(); });
+  v.appendChild(nb);
+  setTimeout(()=>body.focus(),40);
+}
+// ==== SEC:APP/UI/TAB_CREATE (END) ====
+
+// ==== SEC:APP/UI/TAB_INTERVAL (BEGIN) ====
+// "🕓": root picker at top; below, every current child of the root is a
+// running interval with an "end now" button. Ending creates the end
+// entry, links it (ends-type) to the start, and unlinks the start from
+// the root. ＋ starts a new interval and opens its editor.
+function renderInterval(v,tab){
+  const c=tab.cfg;
+  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode(tab.label+' intervals'));
+  hd.appendChild(el('span','spacer'));
+  const m=el('button','iconbtn','⋯'); m.addEventListener('click',Menu.toggle); hd.appendChild(m);
+  v.appendChild(hd);
+
+  v.appendChild(el('div','f-lbl','Root'));
+  const root=c.root_id?getEntry(c.root_id):null;
+  const rf=el('button','f-field',root?disp(root):'root');
+  rf.addEventListener('click',()=>pickEntry('tab'+tab.id+'.root',e=>{
+    c.root_id=e.id; save(); UI.rerender(); }));
+  v.appendChild(rf);
+  if(!root){ v.appendChild(el('div','empty','Pick a root entry (e.g. “Intervals”). Its children are your running clocks.')); return; }
+
+  v.appendChild(el('div','f-lbl','Running'));
+  const running=runningFor(tab);
+  if(!running.length) v.appendChild(el('div','empty','Nothing running.'));
+  running.forEach(e=>{
+    const row=el('div','trow');
+    row.appendChild(el('span','chev','▶'));
+    const nm=el('button','nm'+(e.title?'':' untitled'),disp(e)); nm.style.textAlign='left';
+    nm.addEventListener('click',()=>openEditor(e.id));
+    row.appendChild(nm);
+    row.appendChild(el('span','cnt',fmtDur(Date.now()-new Date(e.ts))));
+    const end=el('button','tbtn end','end now');
+    end.addEventListener('click',()=>{
+      const endE=createEntry();
+      addEdge(endE.id,e.id,c.end_type_id);
+      const rootEdge=liveEdges().find(d=>d.from_id===e.id&&d.to_id===c.root_id&&d.type_id===c.link_type_id);
+      if(rootEdge)removeEdge(rootEdge.id);
+      toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
+      UI.rerender(); });
+    row.appendChild(end);
+    v.appendChild(row); });
+
+  const nb=el('button','bigbtn go','＋ Start an interval');
+  nb.addEventListener('click',()=>{
+    const e=createEntry(); addEdge(e.id,c.root_id,c.link_type_id);
+    UI.rerender(); openEditor(e.id); });
+  v.appendChild(nb);
+}
+// ==== SEC:APP/UI/TAB_INTERVAL (END) ====
+
+// ==== SEC:APP/UI/TAB_EXPLORE (BEGIN) ====
+// "🧭": view field at top, then the entry tree (or a flat date-sorted
+// list with canonical paths). Tapping an entry opens its editor.
+function viewField(container,fieldKey,fbId,onChange){
+  const view=Mem.get(fieldKey,fbId);
+  const f=el('button','f-field',view?('view: '+view.name):'view');
+  f.addEventListener('click',()=>pickView(vw=>{Mem.set(fieldKey,vw.id);onChange();}));
+  container.appendChild(f); return view; }
+
+function renderExplore(v,tab){
+  const st=tabState(tab.id); st.expand=st.expand||new Set(); st.sort=st.sort||'tree';
+  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode(tab.label+' explore'));
+  hd.appendChild(el('span','spacer'));
+  const sortBtn=el('button','sorttog',{tree:'tree',ts:'by time',created:'by created'}[st.sort]);
+  sortBtn.addEventListener('click',()=>{ st.sort={tree:'ts',ts:'created',created:'tree'}[st.sort]; UI.rerender(); });
+  hd.appendChild(sortBtn);
+  const m=el('button','iconbtn','⋯'); m.addEventListener('click',Menu.toggle); hd.appendChild(m);
+  v.appendChild(hd);
+
+  const view=viewField(v,'tab'+tab.id+'.view',tab.cfg.view_id,()=>UI.rerender());
+  const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
+  q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
+  v.appendChild(q);
+  const box=el('div'); v.appendChild(box);
+
+  function redraw(){
+    box.innerHTML='';
+    if(st.sort==='tree'){
+      renderTree(box,{view,q:st.q,expand:st.expand,refresh:redraw,
+        onPick:e=>openEditor(e.id)});
+    } else {
+      const typeIds=typeIdsOf(view), matched=viewMatches(view);
+      let list=[...matched].map(getEntry).filter(Boolean);
+      if(st.q&&st.q.trim())
+        list=list.filter(e=>fuzzy(st.q.trim(),e.title?e.title:(e.body||''))>=0);
+      const key=st.sort==='ts'?'ts':'created_at';
+      list.sort((a,b)=>b[key].localeCompare(a[key]));
+      if(!list.length){ box.appendChild(el('div','empty','No matches.')); return; }
+      list.slice(0,300).forEach(e=>{
+        const r=el('button','flatrow');
+        const path=canonicalPath(e.id,matched,typeIds);
+        const extra=matchedParents(e.id,matched,typeIds).length-1;
+        if(path.length) r.appendChild(el('div','path',
+          path.map(disp).join(' / ')+(extra>0?'  ·  +'+extra:'')));
+        const line=el('div','line');
+        line.appendChild(el('span','nm'+(e.title?'':' untitled'),disp(e)));
+        line.appendChild(el('span','tm',fmtDT(e[key])));
+        r.appendChild(line);
+        r.addEventListener('click',()=>openEditor(e.id));
+        box.appendChild(r); });
+    }
+  }
+  redraw();
+}
+// ==== SEC:APP/UI/TAB_EXPLORE (END) ====
+
+// ==== SEC:APP/UI/TAB_EXCL (BEGIN) ====
+// "☑": list view at top; tapping an entry opens the swap panel where
+// exactly-one membership in the swap view is enforced by the gesture.
+function renderExclusive(v,tab){
+  const st=tabState(tab.id); st.expand=st.expand||new Set();
+  v.appendChild(el('h2','viewtitle',tab.label+' set status'));
+  const view=viewField(v,'tab'+tab.id+'.list',tab.cfg.list_view_id,()=>UI.rerender());
+  const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
+  q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
+  v.appendChild(q);
+  const box=el('div'); v.appendChild(box);
+  function redraw(){ box.innerHTML='';
+    renderTree(box,{view,q:st.q,expand:st.expand,refresh:redraw,
+      onPick:e=>openExclusivePanel(e.id,tab)}); }
+  redraw();
+}
+// ==== SEC:APP/UI/TAB_EXCL (END) ====
+
+// ==== SEC:APP/UI/TAB_VIEWS (BEGIN) ====
+function renderViews(v,tab){
+  const st=tabState(tab.id); st.sort=st.sort||'name';
+  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode('🔎 views'));
+  hd.appendChild(el('span','spacer'));
+  const s=el('button','sorttog',st.sort==='name'?'by name':'by count');
+  s.addEventListener('click',()=>{st.sort=st.sort==='name'?'count':'name';UI.rerender();});
+  hd.appendChild(s); v.appendChild(hd);
+
+  const nb=el('button','bigbtn','＋ New view'); nb.style.marginTop='0';
+  nb.addEventListener('click',()=>{ const vw=createView({name:'new view',
+    type_ids:[liveTypes().find(t=>t.name==='child').id]});
+    openViewEditor(vw.id); });
+  v.appendChild(nb);
+
+  const rows=liveViews().map(vw=>({vw,n:viewMatches(vw).size}));
+  rows.sort((a,b)=> st.sort==='name'? a.vw.name.localeCompare(b.vw.name) : b.n-a.n);
+  rows.forEach(({vw,n})=>{
+    const r=el('button','cfg-row');
+    r.appendChild(el('span','nm',vw.name+(vw.locked?' 🔒':'')));
+    r.appendChild(el('span','mt',n+' entries'));
+    r.addEventListener('click',()=>openViewEditor(vw.id));
+    v.appendChild(r); });
+}
+// ==== SEC:APP/UI/TAB_VIEWS (END) ====
+
+// ==== SEC:APP/UI/TAB_LINKS (BEGIN) ====
+function renderLinks(v){
+  v.appendChild(el('h2','viewtitle','🔗 link types'));
+  const nb=el('button','bigbtn','＋ New link type'); nb.style.marginTop='0';
+  nb.addEventListener('click',()=>{ const nm=prompt('Name for the new link type:');
+    if(nm&&nm.trim()){ createLinkType(nm.trim()); UI.rerender(); } });
+  v.appendChild(nb);
+  liveTypes().forEach(t=>{
+    const r=el('div','cfg-row');
+    const nm=el('button','nm',t.name+(t.locked?' 🔒':'')); nm.style.textAlign='left';
+    nm.addEventListener('click',()=>{ const v2=prompt('Rename link type:',t.name);
+      if(v2&&v2.trim()){ t.name=v2.trim(); save(); UI.rerender(); } });
+    r.appendChild(nm);
+    r.appendChild(el('span','mt',liveEdges().filter(d=>d.type_id===t.id).length+' links'));
+    if(!t.locked){ const del=el('button','mini','✕');
+      del.addEventListener('click',()=>{ if(confirm('Delete type “'+t.name+'”? Its links are soft-deleted.')){
+        t.deleted=1; DB.edges.forEach(d=>{if(d.type_id===t.id)d.deleted=1;}); save(); UI.rerender(); } });
+      r.appendChild(del); }
+    v.appendChild(r); });
+}
+// ==== SEC:APP/UI/TAB_LINKS (END) ====
+
+// ==== SEC:APP/UI/TAB_TABS (BEGIN) ====
+// "🕮": rename, reorder, duplicate (workflow tabs only), delete, and
+// open per-class configuration. Engine tabs are fixed.
+function renderTabs(v){
+  v.appendChild(el('h2','viewtitle','🕮 tabs'));
+  const engine=['views','links','tabs'];
+  liveTabs().forEach((t,i,arr)=>{
+    const r=el('div','cfg-row');
+    const lbl=el('input'); lbl.value=t.label; lbl.style.cssText='width:52px;text-align:center;padding:6px';
+    lbl.addEventListener('change',()=>{t.label=lbl.value||'·';save();renderTabbar();});
+    r.appendChild(lbl);
+    const nm=el('button','nm',t.cls); nm.style.textAlign='left';
+    if(!engine.includes(t.cls)) nm.addEventListener('click',()=>openTabEditor(t.id));
+    r.appendChild(nm);
+    const up=el('button','mini','↑');
+    up.addEventListener('click',()=>{ const idx=DB.tabs.indexOf(t);
+      const prev=DB.tabs.slice(0,idx).reverse().find(x=>!x.deleted);
+      if(prev){ const j=DB.tabs.indexOf(prev); DB.tabs[j]=t; DB.tabs[idx]=prev; save(); UI.rerender(); } });
+    r.appendChild(up);
+    if(!engine.includes(t.cls)){
+      const dup=el('button','mini','⧉'); dup.title='Duplicate';
+      dup.addEventListener('click',()=>{ createTab(t.cls,t.label,JSON.parse(JSON.stringify(t.cfg)));
+        toast('Duplicated — its field memories start fresh'); UI.rerender(); });
+      r.appendChild(dup);
+      const del=el('button','mini','✕');
+      del.addEventListener('click',()=>{ if(confirm('Delete this tab? (Data is untouched.)')){
+        t.deleted=1; save(); if(UI.tabId===t.id)UI.tabId=liveTabs()[0].id; UI.rerender(); } });
+      r.appendChild(del);
+    }
+    v.appendChild(r); });
+}
+// ==== SEC:APP/UI/TAB_TABS (END) ====
+
+// ==== SEC:APP/UI/EDITOR (BEGIN) ====
+// The entry editor: same anatomy as the create tab, plus backlinks,
+// 🔗＋ (new entry born as child of this one, editor stacks), and delete.
+function openEditor(entryId){
+  Modal.push((m,body)=>{
+    const e=getEntry(entryId);
+    if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
+    const tsrow=el('div','f-ts');
+    const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
+    ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value);if(iso)updateEntry(e.id,{ts:iso});});
+    tsrow.appendChild(ti);
+    tsrow.appendChild(el('span','f-created','captured '+fmtDT(e.created_at)));
+    body.appendChild(tsrow);
+
+    const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
+    title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
+    body.appendChild(title);
+    const bd=el('textarea','f-body short'); bd.placeholder='Body'; bd.value=e.body||'';
+    bd.addEventListener('input',()=>updateEntry(e.id,{body:bd.value||null}));
+    body.appendChild(bd);
+
+    body.appendChild(el('div','f-lbl','Links'));
+    const lf=el('div'); body.appendChild(lf);
+    linksField(lf,e.id,'editor.links',()=>Modal.refresh());
+
+    const bl=backlinksOf(e.id);
+    if(bl.length){
+      body.appendChild(el('div','f-lbl','Linked from ('+bl.length+')'));
+      const row=el('div','chiprow');
+      bl.slice(0,20).forEach(({node,type})=>
+        row.appendChild(entryChip(node,{typeLabel:type.name,onTap:()=>openEditor(node.id)})));
+      body.appendChild(row); }
+
+    const nb=el('button','bigbtn','🔗＋ New entry linked under this');
+    nb.addEventListener('click',()=>{
+      const n=createEntry();
+      addEdge(n.id,e.id,liveTypes().find(t=>t.name==='child').id);
+      openEditor(n.id); });
+    body.appendChild(nb);
+
+    const del=el('button','dangerbtn','Delete entry');
+    del.addEventListener('click',()=>{ if(confirm('Delete this entry? (soft delete; links detach)')){
+      deleteEntry(e.id); Modal.pop(); } });
+    body.appendChild(del);
+  });
+}
+// ==== SEC:APP/UI/EDITOR (END) ====
+
+// ==== SEC:APP/UI/PICK_ENTRY (BEGIN) ====
+// The entry picker: search box + view chip up top, the shared tree
+// below. Tapping a name picks it; ＋ on a row creates the typed text as
+// that row's child (list refreshes, nothing is picked). The view chosen
+// here is remembered per fieldKey.
+function pickEntry(fieldKey,onPick){
+  const state={q:'',expand:new Set()};
+  Modal.push((m,body)=>{
+    const top=el('div','mtop');
+    const q=el('input'); q.placeholder='Search or type a new title…';
+    q.addEventListener('input',()=>{state.q=q.value;draw();});
+    top.appendChild(q);
+    const cancel=el('button','cancel','Cancel');
+    cancel.addEventListener('click',()=>Modal.pop());
+    top.appendChild(cancel);
+    m.insertBefore(top,body);
+
+    const vrow=el('div'); vrow.style.cssText='padding:0 0 8px';
+    body.appendChild(vrow);
+    const box=el('div'); body.appendChild(box);
+
+    function draw(){
+      vrow.innerHTML=''; box.innerHTML='';
+      const view=Mem.get(fieldKey,DB.settings.allViewId);
+      const vchip=el('button','chip','view: '+view.name);
+      vchip.addEventListener('click',()=>pickView(vw=>{Mem.set(fieldKey,vw.id);draw();}));
+      vrow.appendChild(vchip);
+      renderTree(box,{view,q:state.q,expand:state.expand,refresh:draw,
+        onPick:e=>{ Modal.pop(); onPick(e); }});
+    }
+    draw();
+    setTimeout(()=>q.focus(),60);
+  });
+}
+// ==== SEC:APP/UI/PICK_ENTRY (END) ====
+
+// ==== SEC:APP/UI/PICK_VIEW (BEGIN) ====
+function pickView(onPick){
+  const state={sort:'name'};
+  Modal.push((m,body)=>{
+    function draw(){
+      body.innerHTML='';
+      const hd=el('div','f-row'); hd.style.marginBottom='8px';
+      hd.appendChild(el('span','f-lbl','Pick a view')).style.margin='0';
+      const s=el('button','sorttog',state.sort==='name'?'by name':'by count');
+      s.addEventListener('click',()=>{state.sort=state.sort==='name'?'count':'name';draw();});
+      hd.appendChild(s); body.appendChild(hd);
+      const rows=liveViews().map(vw=>({vw,n:viewMatches(vw).size}));
+      rows.sort((a,b)=>state.sort==='name'?a.vw.name.localeCompare(b.vw.name):b.n-a.n);
+      rows.forEach(({vw,n})=>{
+        const r=el('button','cfg-row');
+        r.appendChild(el('span','nm',vw.name));
+        r.appendChild(el('span','mt',n+' entries'));
+        r.addEventListener('click',()=>{Modal.pop();onPick(vw);});
+        body.appendChild(r); });
+    }
+    draw();
+  });
+}
+// ==== SEC:APP/UI/PICK_VIEW (END) ====
+
+// ==== SEC:APP/UI/PICK_TYPE (BEGIN) ====
+function pickType(onPick){
+  Modal.push((m,body)=>{
+    body.appendChild(el('div','f-lbl','Link type'));
+    liveTypes().forEach(t=>{
+      const r=el('button','cfg-row');
+      r.appendChild(el('span','nm',t.name));
+      r.addEventListener('click',()=>{Modal.pop();onPick(t);});
+      body.appendChild(r); });
+  });
+}
+// ==== SEC:APP/UI/PICK_TYPE (END) ====
+
+// ==== SEC:APP/UI/PANEL_EXCL (BEGIN) ====
+// The swap panel: entry's title/body read-only up top; swap-view field;
+// members as chips with current membership filled. Tapping a member
+// removes this entry's links (of the tab's type) to ALL current members
+// of the swap view, then links the tapped one — self-healing exclusivity.
+function openExclusivePanel(entryId,tab){
+  Modal.push((m,body)=>{
+    const e=getEntry(entryId);
+    if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
+    body.appendChild(el('div','f-lbl','Entry'));
+    const nm=el('button',null,disp(e));
+    nm.style.cssText='font-size:18px;font-weight:600;text-align:left;padding:2px 0';
+    nm.addEventListener('click',()=>openEditor(e.id));
+    body.appendChild(nm);
+    if(e.title&&e.body){ const b=el('div',null,e.body.slice(0,200));
+      b.style.cssText='color:var(--muted);font-size:14px;margin-top:4px'; body.appendChild(b); }
+
+    body.appendChild(el('div','f-lbl','Set (exactly one)'));
+    const fieldKey='tab'+tab.id+'.swap';
+    const vrow=el('div'); body.appendChild(vrow);
+    const crow=el('div','chiprow'); crow.style.marginTop='10px'; body.appendChild(crow);
+
+    function draw(){
+      vrow.innerHTML=''; crow.innerHTML='';
+      const swapView=Mem.get(fieldKey,tab.cfg.swap_view_id);
+      const vchip=el('button','chip','view: '+swapView.name);
+      vchip.addEventListener('click',()=>pickView(vw=>{Mem.set(fieldKey,vw.id);draw();}));
+      vrow.appendChild(vchip);
+
+      const members=[...viewMatches(swapView)].map(getEntry).filter(Boolean)
+        .sort((a,b)=>a.created_at.localeCompare(b.created_at));
+      const currentIds=new Set(parentEdgesOf(e.id)
+        .filter(x=>x.edge.type_id===tab.cfg.link_type_id).map(x=>x.node.id));
+      members.forEach(mem=>{
+        const isCur=currentIds.has(mem.id);
+        const ch=entryChip(mem,{cls:isCur?'sel':'',onTap:()=>{
+          parentEdgesOf(e.id).forEach(x=>{
+            if(x.edge.type_id===tab.cfg.link_type_id&&members.some(mm=>mm.id===x.node.id))
+              removeEdge(x.edge.id); });
+          addEdge(e.id,mem.id,tab.cfg.link_type_id);
+          toast(disp(e)+' → '+disp(mem)); draw(); }});
+        crow.appendChild(ch); });
+      if(!members.length) crow.appendChild(el('div','empty','The swap view matches nothing.'));
+    }
+    draw();
+  });
+}
+// ==== SEC:APP/UI/PANEL_EXCL (END) ====
+
+// ==== SEC:APP/UI/EDIT_VIEW (BEGIN) ====
+// name, ancestor conditions (+/×, ANDed), containment link types.
+function openViewEditor(viewId){
+  Modal.push((m,body)=>{
+    const vw=getView(viewId);
+    if(!vw){ body.appendChild(el('div','empty','View was deleted.')); return; }
+    body.appendChild(el('div','f-lbl','View name'));
+    const nm=el('input','f-title'); nm.value=vw.name;
+    nm.addEventListener('input',()=>{vw.name=nm.value||'view';save();});
+    body.appendChild(nm);
+
+    body.appendChild(el('div','f-lbl','Conditions — entry must descend from ALL of:'));
+    const crow=el('div','chiprow'); body.appendChild(crow);
+    function drawConds(){
+      crow.innerHTML='';
+      vw.cond_ids=vw.cond_ids.filter(id=>getEntry(id));      // self-repair danglers
+      vw.cond_ids.forEach(cid=>{
+        crow.appendChild(entryChip(getEntry(cid),{onRemove:()=>{
+          vw.cond_ids=vw.cond_ids.filter(x=>x!==cid); save(); drawConds(); }})); });
+      const add=el('button','chip add','＋ condition');
+      add.addEventListener('click',()=>pickEntry('viewEditor.cond',e=>{
+        if(!vw.cond_ids.includes(e.id))vw.cond_ids.push(e.id); save(); drawConds(); }));
+      crow.appendChild(add);
+      if(!vw.cond_ids.length) crow.appendChild(el('span','f-created','(none — matches everything)'));
+    }
+    drawConds();
+
+    body.appendChild(el('div','f-lbl','Containment link types'));
+    const trow=el('div','chiprow'); body.appendChild(trow);
+    liveTypes().forEach(t=>{
+      const on=vw.type_ids.includes(t.id);
+      const c=el('button','chip'+(on?' sel':''),t.name);
+      c.addEventListener('click',()=>{
+        vw.type_ids=on?vw.type_ids.filter(x=>x!==t.id):[...vw.type_ids,t.id];
+        save(); Modal.refresh(); });
+      trow.appendChild(c); });
+
+    if(!vw.locked){
+      const del=el('button','dangerbtn','Delete view');
+      del.addEventListener('click',()=>{ if(confirm('Delete view “'+vw.name+'”?')){
+        vw.deleted=1; save(); Modal.pop(); } });
+      body.appendChild(del); }
+  });
+}
+// ==== SEC:APP/UI/EDIT_VIEW (END) ====
+
+// ==== SEC:APP/UI/EDIT_TAB (BEGIN) ====
+// Per-class configuration for workflow tabs.
+function openTabEditor(tabId){
+  Modal.push((m,body)=>{
+    const t=getTab(tabId);
+    if(!t){ body.appendChild(el('div','empty','Tab was deleted.')); return; }
+    body.appendChild(el('div','f-lbl',t.cls+' tab — label'));
+    const lbl=el('input','f-title'); lbl.value=t.label;
+    lbl.addEventListener('input',()=>{t.label=lbl.value||'·';save();renderTabbar();});
+    body.appendChild(lbl);
+    const c=t.cfg;
+
+    const entryField=(label,key)=>{
+      body.appendChild(el('div','f-lbl',label));
+      const cur=c[key]?getEntry(c[key]):null;
+      const f=el('button','f-field',cur?disp(cur):'pick…');
+      f.addEventListener('click',()=>pickEntry('tabEditor.'+key,e=>{
+        c[key]=e.id; save(); Modal.refresh(); }));
+      body.appendChild(f); };
+    const viewFieldCfg=(label,key)=>{
+      body.appendChild(el('div','f-lbl',label));
+      const cur=c[key]?getView(c[key]):null;
+      const f=el('button','f-field',cur?cur.name:'pick…');
+      f.addEventListener('click',()=>pickView(vw=>{c[key]=vw.id;save();Modal.refresh();}));
+      body.appendChild(f); };
+    const typeFieldCfg=(label,key)=>{
+      body.appendChild(el('div','f-lbl',label));
+      const cur=c[key]?getType(c[key]):null;
+      const f=el('button','f-field',cur?cur.name:'pick…');
+      f.addEventListener('click',()=>pickType(tp=>{c[key]=tp.id;save();Modal.refresh();}));
+      body.appendChild(f); };
+
+    if(t.cls==='create'){
+      c.def=c.def||{};
+      body.appendChild(el('div','f-lbl','Default title'));
+      const dt=el('input','f-title'); dt.value=c.def.title||'';
+      dt.addEventListener('input',()=>{c.def.title=dt.value||null;save();});
+      body.appendChild(dt);
+      body.appendChild(el('div','f-lbl','Default body'));
+      const db=el('textarea','f-body short'); db.value=c.def.body||'';
+      db.addEventListener('input',()=>{c.def.body=db.value||null;save();});
+      body.appendChild(db);
+      body.appendChild(el('div','f-lbl','Default links'));
+      const lr=el('div','chiprow'); body.appendChild(lr);
+      function drawDef(){
+        lr.innerHTML=''; c.def.links=(c.def.links||[]).filter(l=>getEntry(l.to));
+        c.def.links.forEach((l,i)=>{
+          lr.appendChild(entryChip(getEntry(l.to),{typeLabel:getType(l.type)?.name,
+            onRemove:()=>{c.def.links.splice(i,1);save();drawDef();}})); });
+        const add=el('button','chip add','＋');
+        add.addEventListener('click',()=>pickEntry('tabEditor.deflink',e=>{
+          c.def.links.push({to:e.id,type:liveTypes().find(x=>x.name==='child').id});
+          save(); drawDef(); }));
+        lr.appendChild(add); }
+      drawDef();
+    }
+    else if(t.cls==='interval'){
+      entryField('Root entry','root_id');
+      typeFieldCfg('Attach link type','link_type_id');
+      typeFieldCfg('End link type','end_type_id');
+    }
+    else if(t.cls==='explore'){ viewFieldCfg('Default view','view_id'); }
+    else if(t.cls==='exclusive'){
+      viewFieldCfg('List view','list_view_id');
+      viewFieldCfg('Swap view','swap_view_id');
+      typeFieldCfg('Link type','link_type_id');
+    }
+  });
+}
+// ==== SEC:APP/UI/EDIT_TAB (END) ====
+
+// ==== SEC:APP/UI/MENU (BEGIN) ====
+const Menu={ toggle(ev){ ev&&ev.stopPropagation();
+  $('#m-note').textContent=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
+    +DB.entries.filter(e=>!e.deleted).length+' entries, '
+    +liveEdges().length+' links, '+liveViews().length+' views.';
+  $('#menu').classList.toggle('on'); } };
+document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
+$('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList.remove('on');});
+$('#m-import').addEventListener('click',()=>{$('#importfile').click();$('#menu').classList.remove('on');});
+$('#importfile').addEventListener('change',ev=>{
+  const f=ev.target.files[0]; if(!f)return;
+  const r=new FileReader(); r.onload=()=>importNDJSON(r.result); r.readAsText(f);
+  ev.target.value=''; });
+// ==== SEC:APP/UI/MENU (END) ====
+
+// ==== SEC:APP/UI (END) ================================================
+
+// ==== SEC:APP/BOOT (BEGIN) ====
+load(); seed(); migrateV1();
+UI.tabId=liveTabs()[0]?.id;
+UI.rerender();
+// ==== SEC:APP/BOOT (END) ====
+
+// ==== SEC:APP (END) ===================================================
+</script>
+</body>
+</html>
