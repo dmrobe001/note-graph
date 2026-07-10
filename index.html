@@ -1,11 +1,15 @@
 <!doctype html>
 <!-- ================================================================
      ==== SEC:HEADER (BEGIN) ========================================
-     CaptureLog v2 — the engine rebuild
+     Articulate 2.0
      Everything is an entry; relations are typed edges; "task",
-     "status", "interval" are conventions expressed as ordinary
-     entries, views, and tabs. The engine ships with a seed
-     configuration reproducing the Phase-1 workflow.
+     "status", and "interval" are conventions expressed as ordinary
+     entries, views, and tabs. A first-run seed provides a default
+     working configuration.
+
+     Storage identifiers (localStorage keys, the Drive sync filename,
+     NDJSON record tags) are stable wire-level names; they are kept
+     constant across releases so data always outlives the code.
 
      Schema (all references by persistent ID; only id/created_at
      immutable; soft delete everywhere; every record carries
@@ -51,11 +55,11 @@
        SEC:APP                 all JavaScript
          SEC:APP/UTIL            dom/date/format helpers
          SEC:APP/STORE           persistence + flush-on-hide
-         SEC:APP/IDS             device id, id factory, numeric->global
-                                 id migration for existing v2 data
+         SEC:APP/IDS             device id, id factory, migration of
+                                 legacy numeric ids to global ids
          SEC:APP/MODEL           CRUD for all five tables (+touch)
          SEC:APP/SEED            first-run seed configuration
-         SEC:APP/MIGRATE         v1 -> v2 data migration
+         SEC:APP/MIGRATE         legacy-store import (capturelog.v1)
          SEC:APP/QUERY           containment, view matching, trees,
                                  paths, search, running intervals
          SEC:APP/EXPORT          NDJSON serialize/parse/export
@@ -91,7 +95,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#131518">
-<title>CaptureLog</title>
+<title>Articulate</title>
 <style>
 /* ==== SEC:STYLE (BEGIN) ============================================ */
 
@@ -345,9 +349,9 @@ function initCounters(){
   scan(DB.views,'v'); scan(DB.tabs,'b'); }
 function newId(letter){ return deviceId()+'-'+letter+(COUNTERS[letter]++); }
 
-// One-shot migration of pre-sync v2 data: numeric ids become
-// device-prefixed strings; every reference field is rewritten via the
-// old->new maps; updated_at is backfilled; tabs get explicit pos.
+// One-shot migration of legacy numeric ids: ids become device-prefixed
+// strings; every reference field is rewritten via the old->new maps;
+// updated_at is backfilled; tabs get explicit pos.
 function migrateIds(){
   const s=DB.settings;
   if(s.idsMigrated){ return; }
@@ -465,10 +469,12 @@ function seed(){
 // ==== SEC:APP/SEED (END) ====
 
 // ==== SEC:APP/MIGRATE (BEGIN) ====
-// One-shot import of capturelog.v1 data (the Phase-1 build), run after
-// seed so keystones exist. v1 'session' edges become child links from
-// start->task; 'session_end' become ends links; task_state becomes a
-// child link to the matching Status entry. v1 data is left untouched.
+// One-shot import from the legacy store (localStorage key
+// capturelog.v1), run after seed so keystone entries exist. Mapping
+// from that format: 'session' edges become child links (start->task);
+// 'session_end' edges become ends links; task_state becomes a child
+// link to the matching Status entry. The legacy store is read-only
+// here and left in place.
 function migrateV1(){
   if(DB.settings.migratedV1) return;
   DB.settings.migratedV1=true;
@@ -492,7 +498,7 @@ function migrateV1(){
     const type = od.type==='session_end'?ends.id:child.id;   // session & child -> child
     const d=addEdge(f,t,type); if(d&&od.deleted)d.deleted=1;
   });
-  save(); toast('Imported '+old.entries.length+' entries from v1');
+  save(); toast('Imported '+old.entries.length+' entries from legacy storage');
 }
 // ==== SEC:APP/MIGRATE (END) ====
 
@@ -613,14 +619,14 @@ function parseNDJSON(text){
 function exportNDJSON(){
   const blob=new Blob([serialize()],{type:'application/x-ndjson'});
   const a=el('a'); a.href=URL.createObjectURL(blob);
-  a.download='capturelog-'+new Date().toISOString().slice(0,10)+'.ndjson';
+  a.download='articulate-'+new Date().toISOString().slice(0,10)+'.ndjson';
   document.body.appendChild(a); a.click(); a.remove();
   toast('Exported '+DB.entries.length+' entries'); }
 function importText(text,mode){        // mode: 'merge' | 'replace'
   const nd=parseNDJSON(text);
   if(!nd){ toast('Import failed: bad file'); return; }
   if(mode==='merge'){
-    if(nd.legacyIds){ toast('Old-format file — use Import & replace, or re-export from an updated app'); return; }
+    if(nd.legacyIds){ toast('File uses legacy numeric ids — use Import & replace'); return; }
     mergeDB(nd); UI.rerender(); toast('Merged'); }
   else {
     if(!confirm('Replace current data ('+DB.entries.length+' entries) with import ('+nd.entries.length+' entries)?'))return;
@@ -666,7 +672,7 @@ function adoptOrMerge(nd){
 // merge -> push the union. Because the merge is convergent, blind
 // overwrites between devices self-heal on the next cycle; Drive needs
 // no locking.
-// Auth rules learned the hard way:
+// Auth rules:
 //  - Tokens are requested ONLY from a user tap. GIS token requests
 //    open a (possibly self-closing) popup; non-gesture attempts get
 //    popup-blocked and some failure paths never call back.
@@ -678,14 +684,21 @@ function adoptOrMerge(nd){
 //    flag can never deadlock.
 //  - Setup is an in-app modal, not window.prompt(), which is a no-op
 //    in iOS home-screen (standalone) mode.
+// The OAuth client ID is a public identifier (security lives in the
+// authorized-origins list and the consent screen, not in hiding the
+// id), so it is safe to commit here. Paste yours to make every device
+// configured out of the box; the settings sheet can still override it
+// per device.
+const DEFAULT_CLIENT_ID='305277477211-dfb7fhhoe8mndv217sspkru5eu6k7e9s.apps.googleusercontent.com';
 const Sync={
   CFG:'capturelog.sync',
   st:{clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0},
   gisLoading:null, status:'off', busy:false, pushTimer:null,
+  clientId(){ return this.st.clientId||DEFAULT_CLIENT_ID||null; },
   loadCfg(){ try{ const r=localStorage.getItem(this.CFG);
     if(r)Object.assign(this.st,JSON.parse(r)); }catch(e){} },
   saveCfg(){ try{ localStorage.setItem(this.CFG,JSON.stringify(this.st)); }catch(e){} },
-  configured(){ return !!this.st.clientId; },
+  configured(){ return !!this.clientId(); },
   tokenValid(){ return this.st.token&&Date.now()<this.st.tokenExp; },
   init(){ this.loadCfg();
     if(this.configured()){
@@ -711,7 +724,7 @@ const Sync={
       const timer=setTimeout(()=>{ if(!settled){settled=true;
         this.status='need-auth'; rej(new Error('auth timeout')); } },45000);
       const tc=google.accounts.oauth2.initTokenClient({
-        client_id:this.st.clientId,
+        client_id:this.clientId(),
         scope:'https://www.googleapis.com/auth/drive.file',
         callback:(resp)=>{ if(settled)return; settled=true; clearTimeout(timer);
           if(resp&&resp.access_token){
@@ -792,7 +805,7 @@ const Sync={
       body.appendChild(el('div','f-lbl','Client ID'));
       const inp=el('input','f-title');
       inp.placeholder='…apps.googleusercontent.com';
-      inp.value=this.st.clientId||'';
+      inp.value=this.clientId()||'';
       inp.setAttribute('autocapitalize','off'); inp.setAttribute('autocorrect','off');
       inp.setAttribute('spellcheck','false');
       body.appendChild(inp);
@@ -1554,7 +1567,7 @@ load();
 migrateIds();        // numeric -> device-prefixed global ids (one-shot)
 initCounters();      // per-device id counters, derived by scan
 seed();              // no-op unless the DB is empty
-migrateV1();         // one-shot import of Phase-1 data, if present
+migrateV1();         // one-shot import from the legacy store, if present
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
 Sync.init();         // silent Drive sync attempt if configured
