@@ -58,15 +58,14 @@
          SEC:APP/IDS             device id, id factory, migration of
                                  legacy numeric ids to global ids
          SEC:APP/MODEL           CRUD for all five tables (+touch)
-         SEC:APP/SEED            first-run seed configuration
+         SEC:APP/SEED            first-run seed (fixed 'seed-…' ids)
          SEC:APP/MIGRATE         legacy-store import (capturelog.v1)
          SEC:APP/QUERY           containment, view matching, trees,
                                  paths, search, running intervals
          SEC:APP/EXPORT          NDJSON serialize/parse/export
-         SEC:APP/MERGE           union + last-write-wins merge;
-                                 adopt-if-pristine rule
-         SEC:APP/SYNC            Google Drive sync (GIS auth,
-                                 drive.file scope, pull-merge-push)
+         SEC:APP/MERGE           union + last-write-wins merge
+         SEC:APP/SYNC            Google Drive sync: realm pointer,
+                                 pull-merge-push, snapshots, resets
          SEC:APP/UI              view layer
            SEC:APP/UI/ROOT         tab bar, routing, rerender
            SEC:APP/UI/RUNBAR       live running-interval summary
@@ -87,7 +86,7 @@
            SEC:APP/UI/PANEL_EXCL   exclusive swap panel
            SEC:APP/UI/EDIT_VIEW    view editor modal
            SEC:APP/UI/EDIT_TAB     tab config modal
-           SEC:APP/UI/MENU         export/import/status menu + wipe tools
+           SEC:APP/UI/MENU         export/import/status menu + resets
          SEC:APP/BOOT            init
      ==== SEC:HEADER (END) ========================================== -->
 <html lang="en">
@@ -274,7 +273,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
   <button id="m-import">Import &amp; merge…</button>
   <button id="m-replace">Import &amp; replace…</button>
   <button id="m-wipelocal" class="danger" aria-label="Wipe all local data on this device">Wipe local data…</button>
-  <button id="m-wipedrive" class="danger" aria-label="Delete all Articulate files from Google Drive">Wipe Drive data…</button>
+  <button id="m-newrealm" class="danger" aria-label="Reset all devices by starting a new realm">New realm (reset all)…</button>
   <div class="note" id="m-note"></div>
 </div>
 <input type="file" id="importfile" accept=".ndjson,.txt,.json" style="display:none">
@@ -286,8 +285,6 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 
 // ==== SEC:APP/UTIL (BEGIN) ====
 const MAX_SNAPSHOT_LABEL_LENGTH=80;
-const SINGLETON_ENGINE_TAB_CLASSES=['views','links','tabs'];
-const CANON_WORKFLOW_TAB_CLASSES=['create','interval','explore','exclusive'];
 const $  = s => document.querySelector(s);
 const el = (tag, cls, txt) => { const e=document.createElement(tag);
   if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
@@ -324,7 +321,7 @@ const Store={ memoryOnly:false, _mem:null,
 
 let DB={ v:2,
   entries:[], edges:[], linkTypes:[], views:[], tabs:[],
-  settings:{ allViewId:null, mem:{}, migratedV1:false, idsMigrated:false, dirty:false, syncEpoch:0 } };
+  settings:{ allViewId:null, mem:{}, migratedV1:false, idsMigrated:false, dirty:false } };
 
 let saveTimer=null;
 let scheduleDriveSync=()=>{};          // replaced by SEC:APP/SYNC once defined
@@ -338,7 +335,6 @@ function load(){ const raw=Store.read(STORE_KEY);
   if(raw){ try{ DB=JSON.parse(raw); }catch(e){ console.error('load failed',e); } }
   if(!DB.settings) DB.settings={};
   if(!DB.settings.mem) DB.settings.mem={};
-  if(DB.settings.syncEpoch==null) DB.settings.syncEpoch=0;
   $('#membanner').classList.toggle('on',Store.memoryOnly); }
 // ==== SEC:APP/STORE (END) ====
 
@@ -459,33 +455,50 @@ const Mem={
 
 // ==== SEC:APP/SEED (BEGIN) ====
 // First run: seed link types, keystone entries, views, and the default
-// tab set. Everything seeded is ordinary data — retitle, reconfigure,
-// or (mostly) delete at will. "All" and the engine tabs are locked.
+// tab set. Seed records carry FIXED ids ('seed-…'), identical on every
+// device, so independently seeded stores contain literally the same
+// records and the sync merge (SEC:APP/MERGE) unions them into a single
+// copy of each. Everything seeded is ordinary data — retitle,
+// reconfigure, or (mostly) delete at will. "All" and the engine tabs
+// are locked.
 function seed(){
   if(DB.linkTypes.length||DB.entries.length) return;
-  const child=createLinkType('child',1);
-  const ends =createLinkType('ends',1);
-  const status=createEntry({title:'Status'});
-  const active=createEntry({title:'Active'});
-  const someday=createEntry({title:'Someday'});
-  const done=createEntry({title:'Done'});
-  const dead=createEntry({title:'Dead'});
-  [active,someday,done,dead].forEach(s=>addEdge(s.id,status.id,child.id));
-  const intervals=createEntry({title:'Intervals'});
-  const all=createView({name:'All',cond_ids:[],type_ids:[child.id],locked:1});
-  const vAct=createView({name:'Active',cond_ids:[active.id],type_ids:[child.id]});
-  const vStat=createView({name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
+  const t0=nowISO();
+  const mkType=(id,name)=>{ const t={id,name,locked:1,updated_at:t0,deleted:0};
+    DB.linkTypes.push(t); return t; };
+  const mkEntry=(id,title)=>{ const e={id,created_at:t0,ts:t0,updated_at:t0,
+    title,body:null,estimate_min:null,deleted:0}; DB.entries.push(e); return e; };
+  const mkEdge=(id,from,to,type)=>DB.edges.push({id,from_id:from.id,to_id:to.id,
+    type_id:type.id,created_at:t0,updated_at:t0,deleted:0});
+  const mkView=(id,f)=>{ const v={id,name:'view',cond_ids:[],type_ids:[],locked:0,
+    updated_at:t0,deleted:0,...f}; DB.views.push(v); return v; };
+  let pos=0;
+  const mkTab=(id,cls,label,cfg)=>DB.tabs.push({id,cls,label,pos:++pos,cfg,
+    updated_at:t0,deleted:0});
+  const child=mkType('seed-t-child','child');
+  const ends =mkType('seed-t-ends','ends');
+  const status=mkEntry('seed-e-status','Status');
+  const active=mkEntry('seed-e-active','Active');
+  const someday=mkEntry('seed-e-someday','Someday');
+  const done=mkEntry('seed-e-done','Done');
+  const dead=mkEntry('seed-e-dead','Dead');
+  [active,someday,done,dead].forEach(s=>
+    mkEdge('seed-g-'+s.id.slice('seed-e-'.length)+'-status',s,status,child));
+  const intervals=mkEntry('seed-e-intervals','Intervals');
+  const all=mkView('seed-v-all',{name:'All',type_ids:[child.id],locked:1});
+  const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
+  const vStat=mkView('seed-v-statuses',{name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
   DB.settings.allViewId=all.id;
-  createTab('create','＋',{});
-  createTab('interval','🕓',{root_id:intervals.id,link_type_id:child.id,end_type_id:ends.id});
-  createTab('explore','🧭',{view_id:all.id});
-  createTab('exclusive','☑',{list_view_id:vAct.id,swap_view_id:vStat.id,link_type_id:child.id});
-  createTab('views','🔎',{});
-  createTab('links','🔗',{});
-  createTab('tabs','🕮',{});
+  mkTab('seed-b-create','create','＋',{});
+  mkTab('seed-b-interval','interval','🕓',{root_id:intervals.id,link_type_id:child.id,end_type_id:ends.id});
+  mkTab('seed-b-explore','explore','🧭',{view_id:all.id});
+  mkTab('seed-b-exclusive','exclusive','☑',{list_view_id:vAct.id,swap_view_id:vStat.id,link_type_id:child.id});
+  mkTab('seed-b-views','views','🔎',{});
+  mkTab('seed-b-links','links','🔗',{});
+  mkTab('seed-b-tabs','tabs','🕮',{});
   DB.settings.idsMigrated=true;   // fresh DBs are born with global ids
-  DB.settings.dirty=false;        // pristine: sync may ADOPT remote data
-  saveNow();
+  DB.settings.dirty=false;
+  saveNow({schedule:false});
 }
 // ==== SEC:APP/SEED (END) ====
 
@@ -619,20 +632,21 @@ function endEntryOf(startId,endTypeId){
 // sync — one wire format everywhere.
 function serialize(){
   const L=[JSON.stringify({_t:'meta',v:2,exported:nowISO(),
-    settings:{allViewId:DB.settings.allViewId,mem:DB.settings.mem,syncEpoch:DB.settings.syncEpoch||0}})];
+    realm:Sync.st.realm||null,   // lets pull() refuse cross-realm merges
+    settings:{allViewId:DB.settings.allViewId,mem:DB.settings.mem}})];
   const dump=(arr,t)=>arr.forEach(o=>L.push(JSON.stringify({_t:t,...o})));
   dump(DB.entries,'entry'); dump(DB.edges,'edge'); dump(DB.linkTypes,'linktype');
   dump(DB.views,'view'); dump(DB.tabs,'tab');
   return L.join('\n'); }
 function parseNDJSON(text){
-  const nd={v:2,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
-    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:true,syncEpoch:0}};
+  const nd={v:2,realm:null,entries:[],edges:[],linkTypes:[],views:[],tabs:[],
+    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:true}};
   for(const line of text.split('\n')){ if(!line.trim())continue;
     let o; try{o=JSON.parse(line);}catch(e){return null;}
     const t=o._t; delete o._t;
-    if(t==='meta'){ if(o.settings){ nd.settings.allViewId=o.settings.allViewId??null;
-      nd.settings.mem=o.settings.mem||{};
-      nd.settings.syncEpoch=Number.isFinite(+o.settings.syncEpoch)?(+o.settings.syncEpoch):0; } }
+    if(t==='meta'){ nd.realm=(typeof o.realm==='string'&&o.realm)?o.realm:null;
+      if(o.settings){ nd.settings.allViewId=o.settings.allViewId??null;
+        nd.settings.mem=o.settings.mem||{}; } }
     else if(t==='entry')nd.entries.push(o); else if(t==='edge')nd.edges.push(o);
     else if(t==='linktype')nd.linkTypes.push(o); else if(t==='view')nd.views.push(o);
     else if(t==='tab')nd.tabs.push(o); }
@@ -656,6 +670,20 @@ function importText(text,mode){        // mode: 'merge' | 'replace'
     DB=nd; if(!DB.settings.idsMigrated) migrateIds();
     initCounters(); UI.tabId=liveTabs()[0]?.id;
     saveNow(); UI.rerender(); toast('Imported'); } }
+// Everything a factory reset needs on the local side: drop the store,
+// rebuild the seed, refresh the UI. Realm membership is the caller's
+// concern (SEC:APP/SYNC).
+function resetLocalStore(){
+  try{ localStorage.removeItem(STORE_KEY); }catch(e){}
+  DB={ v:2, entries:[],edges:[],linkTypes:[],views:[],tabs:[],
+    settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:false} };
+  initCounters(); seed();
+  UI.tabId=liveTabs()[0]?.id; UI.rerender(); }
+// True if any record was created outside seed() — i.e. there is
+// something worth snapshotting before a reset.
+function hasNonSeedData(){
+  return ['entries','edges','linkTypes','views','tabs']
+    .some(t=>DB[t].some(r=>!String(r.id).startsWith('seed-'))); }
 // ==== SEC:APP/EXPORT (END) ====
 
 // ==== SEC:APP/MERGE (BEGIN) ====
@@ -664,53 +692,9 @@ function importText(text,mode){        // mode: 'merge' | 'replace'
 // fallback clock). Deletes are just records whose tombstone flag rode
 // in on a newer clock, so delete-vs-edit resolves by the same rule.
 // Order-insensitive and idempotent: any stale file merges harmlessly.
-// The pristine exception: a DB that contains nothing but its own seed
-// (dirty===false) ADOPTS incoming data wholesale, preventing duplicate
-// keystone entries/views/tabs when a second device joins.
+// Seed records carry the same fixed ids everywhere (SEC:APP/SEED), so
+// independently seeded stores union into one seed by construction.
 const stampOf=r=>r.updated_at||r.created_at||'';
-function stableCfgJSON(v){
-  if(v==null) return 'null';
-  if(Array.isArray(v)) return '['+v.map(stableCfgJSON).join(',')+']';
-  if(v&&typeof v==='object'){
-    return '{'+Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+stableCfgJSON(v[k])).join(',')+'}'; }
-  return JSON.stringify(v); }
-function tabCanonKey(tab){
-  if(!tab||tab.deleted) return null;
-  const cls=tab.cls||'';
-  // SEC:APP/MERGE: engine config tabs are singleton by design.
-  if(SINGLETON_ENGINE_TAB_CLASSES.includes(cls)) return 'engine:'+cls;
-  if(CANON_WORKFLOW_TAB_CLASSES.includes(cls))
-    return 'workflow:'+cls+'|'+(tab.label||'')+'|'+stableCfgJSON(tab.cfg||{});
-  return null; } // custom classes are left untouched
-function duplicateTabSummary(rows){
-  const groupsByKey=new Map();
-  (rows||DB.tabs).filter(t=>!t.deleted).forEach(t=>{
-    const k=tabCanonKey(t); if(!k) return;
-    const g=groupsByKey.get(k)||{key:k,cls:t.cls,tabs:[]}; g.tabs.push(t); groupsByKey.set(k,g); });
-  const groups=[...groupsByKey.values()].filter(g=>g.tabs.length>1).map(g=>({
-    key:g.key,cls:g.cls,count:g.tabs.length,
-    ids:g.tabs.map(t=>t.id).sort((a,b)=>String(a).localeCompare(String(b))) }));
-  const dupes=groups.reduce((n,g)=>n+(g.count-1),0);
-  return {groups,dupes}; }
-function canonicalizeTabs(){
-  const dup=duplicateTabSummary(DB.tabs);
-  dup.groups.forEach(g=>{
-    const tabs=g.ids.map(id=>DB.tabs.find(t=>t.id===id)).filter(Boolean);
-    tabs.sort((a,b)=>{
-      const sa=stampOf(a), sb=stampOf(b);
-      if(sb!==sa) return sb.localeCompare(sa);
-      return String(a.id).localeCompare(String(b.id)); });
-    const keep=tabs[0];
-    tabs.slice(1).forEach(t=>{ t.deleted=1;
-      t.updated_at=stampOf(t)||stampOf(keep)||nowISO(); });
-  });
-  if(UI.tabId&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
-  return dup.dupes;
-}
-// adoptOrMerge return values:
-//  - 'ignored': payload missing/legacy
-//  - 'stale-remote': remote epoch is behind local
-//  - 'ok': merge/adopt applied
 function mergeDB(nd){
   if(!DB.settings.mem) DB.settings.mem={};
   ['entries','edges','linkTypes','views','tabs'].forEach(t=>{
@@ -723,32 +707,48 @@ function mergeDB(nd){
     DB.settings.allViewId=nd.settings.allViewId;
   Object.entries((nd.settings&&nd.settings.mem)||{}).forEach(([k,v])=>{
     if(!(k in DB.settings.mem)) DB.settings.mem[k]=v; });   // local field memory wins
-  DB.settings.syncEpoch=Math.max(DB.settings.syncEpoch||0,nd?.settings?.syncEpoch||0);
   DB.settings.dirty=true;
-  canonicalizeTabs();
+  if(UI.tabId&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
   saveNow({schedule:false}); } // SEC:APP/MERGE: sync-internal writes must not queue another sync
-function adoptOrMerge(nd){
-  if(!nd||nd.legacyIds) return 'ignored'; // import parser flags old numeric-ID payloads as legacyIds
-  if(!nd.settings) nd.settings={};
-  if(nd.settings.syncEpoch==null) nd.settings.syncEpoch=0;
-  const localEpoch=DB.settings.syncEpoch||0, remoteEpoch=nd.settings.syncEpoch||0;
-  if(remoteEpoch<localEpoch) return 'stale-remote';
-  if(remoteEpoch>localEpoch||DB.settings.dirty===false){
-    DB=nd; initCounters(); UI.tabId=liveTabs()[0]?.id;
-    canonicalizeTabs();
-    saveNow({schedule:false});
-    toast('Adopted synced data'); }
-  else mergeDB(nd);
-  return 'ok'; }
 // ==== SEC:APP/MERGE (END) ====
 
 // ==== SEC:APP/SYNC (BEGIN) ====
-// Google Drive sync. Client-only: Google Identity Services for an
-// access token (drive.file scope — the app can only see files it
-// created), Drive REST v3 for the blob. Cycle: pull remote -> adopt or
-// merge -> push the union. Because the merge is convergent, blind
-// overwrites between devices self-heal on the next cycle; Drive needs
-// no locking.
+// Google Drive sync, organized around REALMS.
+//
+// A realm is one shared dataset, named by a short random string. Its
+// state lives in a single Drive file, capturelog-sync-<realm>.ndjson,
+// maintained by convergent pull-merge-push cycles (SEC:APP/MERGE). A
+// well-known pointer file, capturelog-realm.json, records which realm
+// this Drive account is currently on: {realm, generation}. generation
+// is a monotonic counter, bumped each time a realm is minted.
+//
+// Every sync cycle begins by reading the pointer:
+//  - pointer generation ABOVE this device's: the dataset was reset
+//    from another device. This device's store is preserved to Drive
+//    as a restorable snapshot (if it holds any non-seed data), then
+//    wiped and re-seeded, and the device joins the pointer's realm.
+//  - pointer generation BELOW this device's: the pointer is stale
+//    (written by a device that hadn't caught up); rewrite it.
+//  - equal generations, different realms (two devices minted
+//    concurrently): the lexicographically greater realm string wins —
+//    the same verdict on every device, so all converge.
+//  - no pointer: publish this device's realm (minting one if needed).
+// A device that has data but no realm yet (used offline before its
+// first sync) joins the pointer's realm WITHOUT a wipe; the ordinary
+// merge unions its records in.
+//
+// The reset story follows from the pointer: "New realm" (⋯ menu)
+// mints a fresh realm at generation+1, wipes this device, and
+// rewrites the pointer; every other device follows on its own next
+// sync. Restoring a snapshot mints a new realm the same way, seeded
+// with the snapshot's contents. Files of realms nobody points at —
+// including files written by app builds that know nothing of realms —
+// are simply never read again; they can be deleted from Drive by hand
+// at leisure.
+//
+// Transport is client-only: Google Identity Services for an access
+// token (drive.file scope — the app can only see files it created),
+// Drive REST v3 for the blobs.
 // Auth rules:
 //  - Tokens are requested ONLY from a user tap. GIS token requests
 //    open a (possibly self-closing) popup; non-gesture attempts get
@@ -767,9 +767,10 @@ function adoptOrMerge(nd){
 // configured out of the box; the settings sheet can still override it
 // per device.
 const DEFAULT_CLIENT_ID='305277477211-dfb7fhhoe8mndv217sspkru5eu6k7e9s.apps.googleusercontent.com';
+const REALM_POINTER_NAME='capturelog-realm.json';
 const Sync={
   CFG:'capturelog.sync',
-  st:{clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0},
+  st:{clientId:null,realm:null,generation:0,ptrId:null,fileId:null,remoteTime:null,token:null,tokenExp:0},
   gisLoading:null, status:'off', busy:false, pushTimer:null, lastPullDecision:'none',
   clientId(){ return this.st.clientId||DEFAULT_CLIENT_ID||null; },
   loadCfg(){ try{ const r=localStorage.getItem(this.CFG);
@@ -780,23 +781,30 @@ const Sync={
   tokenStateLabel(){
     if(!this.st.token) return 'missing';
     return this.tokenValid()?'valid':'expired'; },
+  newRealmId(){
+    const c=window.crypto; let s='';
+    if(c&&typeof c.getRandomValues==='function'){
+      const b=new Uint8Array(6); c.getRandomValues(b);
+      s=[...b].map(x=>(x%36).toString(36)).join('');
+    } else s=Math.random().toString(36).slice(2,8);
+    return 'r'+s; },
+  syncFileName(){ return 'capturelog-sync-'+this.st.realm+'.ndjson'; },
   diagnostics(){
-    const dup=duplicateTabSummary(DB.tabs);
     return {
       deviceId:deviceId(),
       syncConfigured:this.configured(),
       token:this.tokenStateLabel(),
+      realm:this.st.realm||'(none)',
+      generation:this.st.generation||0,
       fileId:this.st.fileId||'(none)',
       remoteModifiedTime:this.st.remoteTime||'(unknown)',
-      syncEpoch:DB.settings.syncEpoch||0,
       tableCounts:{
         entries:DB.entries.filter(e=>!e.deleted).length,
         edges:DB.edges.filter(e=>!e.deleted).length,
         linkTypes:DB.linkTypes.filter(e=>!e.deleted).length,
         views:DB.views.filter(e=>!e.deleted).length,
         tabs:DB.tabs.filter(e=>!e.deleted).length
-      },
-      duplicateTabs:dup
+      }
     }; },
   init(){ this.loadCfg();
     if(this.configured()){
@@ -844,51 +852,75 @@ const Sync={
         this.status='need-auth'; throw new Error('auth'); }
       if(!r.ok) throw new Error('drive '+r.status);
       return r; }); },
-  uploadNamedNDJSON(name,text){
+  uploadNamed(name,text,mime){
     const boundary='clb'+Math.random().toString(36).slice(2);
     const body='--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'
       +JSON.stringify({name})
-      +'\r\n--'+boundary+'\r\nContent-Type: application/x-ndjson\r\n\r\n'
+      +'\r\n--'+boundary+'\r\nContent-Type: '+mime+'\r\n\r\n'
       +text+'\r\n--'+boundary+'--';
     return this.api('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime',
       {method:'POST',headers:{'Content-Type':'multipart/related; boundary='+boundary},body})
       .then(r=>r.json());
   },
+  // ---- realm pointer ------------------------------------------------
+  readPointer(){
+    const get=()=>this.api('https://www.googleapis.com/drive/v3/files/'+this.st.ptrId+'?alt=media')
+      .then(r=>r.json())
+      .catch(e=>{ if(String(e).includes('404')){ this.st.ptrId=null; this.saveCfg(); return null; }
+        throw e; });
+    if(this.st.ptrId) return get();
+    const q=encodeURIComponent("name='"+REALM_POINTER_NAME+"' and trashed=false");
+    return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id)')
+      .then(r=>r.json()).then(j=>{
+        if(!(j.files&&j.files.length)) return null;
+        this.st.ptrId=j.files[0].id; this.saveCfg(); return get(); }); },
+  writePointer(){
+    const body=JSON.stringify({realm:this.st.realm,generation:this.st.generation||0,updated:nowISO()});
+    if(this.st.ptrId)
+      return this.api('https://www.googleapis.com/upload/drive/v3/files/'+this.st.ptrId+'?uploadType=media',
+        {method:'PATCH',headers:{'Content-Type':'application/json'},body})
+        .catch(e=>{ if(String(e).includes('404')){ this.st.ptrId=null; this.saveCfg();
+          return this.writePointer(); } throw e; });
+    return this.uploadNamed(REALM_POINTER_NAME,body,'application/json')
+      .then(f=>{ this.st.ptrId=f.id; this.saveCfg(); }); },
+  joinRealm(realm,generation){
+    this.st.realm=realm; this.st.generation=generation;
+    this.st.fileId=null; this.st.remoteTime=null;   // realm file must be re-found and re-read
+    this.saveCfg(); },
+  // Remote factory reset: preserve this device's data as a restorable
+  // snapshot, then wipe, re-seed, and join the pointer's realm. The
+  // pull that follows in the same cycle fills the store with the
+  // realm's data.
+  adoptRealm(realm,generation){
+    const backup=hasNonSeedData()?this.createSnapshot('replaced'):Promise.resolve();
+    return backup.then(()=>{
+      this.joinRealm(realm,generation);
+      resetLocalStore();
+      toast('Realm reset (g'+generation+') — joining '+realm); }); },
+  checkRealm(){
+    return this.readPointer().then(ptr=>{
+      const ok=ptr&&typeof ptr.realm==='string'&&ptr.realm&&Number.isFinite(+ptr.generation);
+      if(!ok){                                   // no (usable) pointer: publish ours
+        if(!this.st.realm){ this.st.realm=this.newRealmId(); this.st.generation=1; this.saveCfg(); }
+        return this.writePointer(); }
+      const rg=+ptr.generation, lg=this.st.generation||0;
+      if(!this.st.realm){ this.joinRealm(ptr.realm,rg); return; }   // new member: merge in, no wipe
+      if(ptr.realm===this.st.realm){
+        if(rg>lg){ this.st.generation=rg; this.saveCfg(); }         // record the newer clock
+        else if(rg<lg) return this.writePointer();                  // heal a stale pointer
+        return; }
+      if(rg>lg||(rg===lg&&ptr.realm>this.st.realm))
+        return this.adoptRealm(ptr.realm,rg);
+      return this.writePointer(); }); },                            // our realm outranks; heal
+  // ---- realm data file ----------------------------------------------
   find(){ if(this.st.fileId) return Promise.resolve();
-    const q=encodeURIComponent("name='capturelog-sync.ndjson' and trashed=false");
+    const q=encodeURIComponent("name='"+this.syncFileName()+"' and trashed=false");
     return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,modifiedTime)')
       .then(r=>r.json()).then(j=>{
         if(j.files&&j.files.length){
           this.st.fileId=j.files[0].id; this.saveCfg(); return; }
-        return this.uploadNamedNDJSON('capturelog-sync.ndjson',serialize()).then(f=>{
+        return this.uploadNamed(this.syncFileName(),serialize(),'application/x-ndjson').then(f=>{
             this.st.fileId=f.id; this.st.remoteTime=f.modifiedTime; this.saveCfg(); }); }); },
-  listSnapshots(){
-    const q=encodeURIComponent("name contains 'capturelog-snapshot-' and trashed=false");
-    return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)')
-      .then(r=>r.json()).then(j=>j.files||[]); },
-  snapshotStamp(){ return new Date().toISOString().replace(/[:.]/g,'-'); },
-  snapshotFileName(){ return 'capturelog-snapshot-'+this.snapshotStamp()+'-e'+(DB.settings.syncEpoch||0)+'.ndjson'; },
-  createSnapshot(){
-    return this.uploadNamedNDJSON(this.snapshotFileName(),serialize()); },
-  restoreSnapshot(file){
-    return this.api('https://www.googleapis.com/drive/v3/files/'+file.id+'?alt=media')
-      .then(r=>r.text()).then(text=>{
-        const nd=parseNDJSON(text);
-        if(!nd||nd.legacyIds) throw new Error('bad snapshot');
-        // SEC:APP/SYNC: restored snapshot wins by advancing epoch above both peers.
-        const nextEpoch=Math.max(DB.settings.syncEpoch||0,nd.settings?.syncEpoch||0)+1;
-        DB=nd;
-        if(!DB.settings) DB.settings={};
-        DB.settings.syncEpoch=nextEpoch;
-        DB.settings.dirty=true; // SEC:APP/SYNC: restored snapshots must propagate
-        canonicalizeTabs();
-        initCounters();
-        UI.tabId=liveTabs()[0]?.id||null;
-        saveNow();
-        UI.rerender();
-        toast('Snapshot restored · epoch '+nextEpoch);
-        if(this.configured()&&this.tokenValid()) this.syncNow(false);
-      }); },
   pull(){
     return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?fields=modifiedTime')
       .then(r=>r.json()).then(meta=>{
@@ -896,7 +928,10 @@ const Sync={
         return this.api('https://www.googleapis.com/drive/v3/files/'+this.st.fileId+'?alt=media')
           .then(r=>r.text()).then(text=>{
             const nd=parseNDJSON(text);
-            this.lastPullDecision=adoptOrMerge(nd); // SEC:APP/SYNC: epoch guard + silent merge path
+            if(!nd||nd.legacyIds) this.lastPullDecision='ignored';
+            else if(nd.realm&&nd.realm!==this.st.realm)
+              this.lastPullDecision='foreign-realm';   // never merge across realms
+            else { mergeDB(nd); this.lastPullDecision='merged'; }
             this.st.remoteTime=meta.modifiedTime; this.saveCfg(); return true; }); })
       .catch(e=>{ if(String(e).includes('404')){ this.st.fileId=null; this.saveCfg(); }
         throw e; }); },
@@ -909,6 +944,7 @@ const Sync={
     if(this.busy||!this.configured()) return Promise.resolve();
     this.busy=true; this.status='syncing';
     return this.ensureToken(interactive)
+      .then(()=>this.checkRealm())
       .then(()=>this.find())
       .then(()=>this.pull())
       .then(changed=>{ if(changed)UI.rerender(); return this.push(); })
@@ -918,6 +954,63 @@ const Sync={
           ?'Sign-in didn\u2019t complete — check popups, then tap again'
           :'Sync failed — will retry'); })
       .finally(()=>{ this.busy=false; }); },
+  // ---- resets --------------------------------------------------------
+  // Mint a fresh realm: snapshot this device's data, wipe and re-seed
+  // locally, bump the pointer past everything known. Every other device
+  // adopts on its next sync (snapshotting its own data first).
+  newRealm(){
+    if(!this.configured()){ toast('Set up Drive sync first'); return; }
+    if(this.busy){ toast('Sync in progress — try again in a moment'); return; }
+    const n=DB.entries.filter(e=>!e.deleted).length;
+    if(!confirm('Start a new realm? Every synced device resets to a fresh seed on its next sync — this one right now ('+n+' entries). Each device with data saves a restorable snapshot to Drive first.')) return;
+    if(!confirm('Last chance — snapshots stay restorable from Snapshots / restore. Start the new realm now?')) return;
+    this.busy=true; clearTimeout(this.pushTimer); this.status='syncing';
+    this.ensureToken(true)
+      .then(()=>hasNonSeedData()?this.createSnapshot('replaced'):null)
+      .then(()=>this.readPointer())
+      .then(ptr=>{
+        const base=Math.max(this.st.generation||0,
+          (ptr&&Number.isFinite(+ptr.generation))?+ptr.generation:0);
+        this.joinRealm(this.newRealmId(),base+1);
+        resetLocalStore();
+        return this.writePointer(); })
+      .then(()=>{ this.busy=false; this.status='ok';
+        toast('New realm '+this.st.realm+' (g'+this.st.generation+')');
+        return this.syncNow(true); })   // creates the realm file from the seed
+      .catch(()=>{ this.busy=false;
+        const na=this.status==='need-auth';
+        if(!na) this.status='error';
+        toast(na?'Sign-in didn\u2019t complete — check popups, then tap again'
+                :'New realm failed — try again'); }); },
+  // ---- snapshots -------------------------------------------------------
+  listSnapshots(){
+    const q=encodeURIComponent("name contains 'capturelog-snapshot-' and trashed=false");
+    return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=modifiedTime desc&fields=files(id,name,modifiedTime)')
+      .then(r=>r.json()).then(j=>j.files||[]); },
+  snapshotStamp(){ return new Date().toISOString().replace(/[:.]/g,'-'); },
+  snapshotFileName(tag){ return 'capturelog-snapshot-'+this.snapshotStamp()+(tag?'-'+tag:'')+'.ndjson'; },
+  createSnapshot(tag){
+    return this.uploadNamed(this.snapshotFileName(tag),serialize(),'application/x-ndjson'); },
+  // Restore mints a new realm whose contents are exactly the snapshot;
+  // the pointer bump then propagates the restored state to every device.
+  restoreSnapshot(file){
+    return this.api('https://www.googleapis.com/drive/v3/files/'+file.id+'?alt=media')
+      .then(r=>r.text()).then(text=>{
+        const nd=parseNDJSON(text);
+        if(!nd||nd.legacyIds) throw new Error('bad snapshot');
+        return this.readPointer().then(ptr=>{
+          const base=Math.max(this.st.generation||0,
+            (ptr&&Number.isFinite(+ptr.generation))?+ptr.generation:0);
+          DB=nd;
+          if(!DB.settings) DB.settings={};
+          initCounters();
+          UI.tabId=liveTabs()[0]?.id||null;
+          saveNow({schedule:false});
+          this.joinRealm(this.newRealmId(),base+1);
+          return this.writePointer().then(()=>{
+            UI.rerender();
+            toast('Snapshot restored — new realm '+this.st.realm+' (g'+this.st.generation+')');
+            return this.syncNow(false); }); }); }); },
   setup(){
     Modal.push((m,body)=>{
       body.appendChild(el('div','f-lbl','Google Drive sync'));
@@ -937,6 +1030,8 @@ const Sync={
       inp.setAttribute('autocapitalize','off'); inp.setAttribute('autocorrect','off');
       inp.setAttribute('spellcheck','false');
       body.appendChild(inp);
+      if(this.st.realm)
+        body.appendChild(el('div','f-created','Realm: '+this.st.realm+' · generation '+(this.st.generation||0)));
       const err=el('div'); err.style.cssText='color:var(--danger);font-size:12px;min-height:16px;margin-top:6px';
       body.appendChild(err);
       const go=el('button','bigbtn go','Connect & sync');
@@ -954,40 +1049,12 @@ const Sync={
         body.appendChild(off); }
     }); },
   disconnect(){
-    this.st={clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0}; this.saveCfg();
-    this.status='off'; toast('Drive sync disconnected'); },
-  // SEC:APP/SYNC: test tool. Deletes every app-created Articulate file on
-  // Drive (the sync blob + all snapshots; drive.file scope only sees files
-  // this app created). Local data is untouched — the NEXT sync from any
-  // device (including this one) recreates capturelog-sync.ndjson from that
-  // device's own store. For a fully clean slate, wipe Drive first, then
-  // wipe local on each device. Holds the busy flag so a background
-  // pull/push cannot race the deletes.
-  wipeDrive(){
-    if(!this.configured()){ toast('Set up Drive sync first'); return; }
-    if(this.busy){ toast('Sync in progress \u2014 try again in a moment'); return; }
-    this.busy=true; clearTimeout(this.pushTimer);
-    this.ensureToken(true)
-      .then(()=>{
-        const q=encodeURIComponent("(name='capturelog-sync.ndjson' or name contains 'capturelog-snapshot-') and trashed=false");
-        return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,name)')
-          .then(r=>r.json()); })
-      .then(j=>{
-        const files=j.files||[];
-        if(!files.length){ toast('No Articulate files found on Drive'); return; }
-        const names=files.map(f=>f.name).join('\n');
-        if(!confirm('Delete '+files.length+' Articulate file(s) from Google Drive?\n\n'+names
-          +'\n\nLocal data on this device is kept. Any device that syncs afterwards will recreate the sync file from its own data.')) return;
-        return Promise.all(files.map(f=>
-            this.api('https://www.googleapis.com/drive/v3/files/'+f.id,{method:'DELETE'})))
-          .then(()=>{
-            // stale cache would 404 on the next pull; clear it now
-            this.st.fileId=null; this.st.remoteTime=null; this.saveCfg();
-            toast('Deleted '+files.length+' file(s) from Drive'); }); })
-      .catch(()=>{ toast(this.status==='need-auth'
-        ?'Sign-in didn\u2019t complete \u2014 check popups, then tap again'
-        :'Drive wipe failed \u2014 try again'); })
-      .finally(()=>{ this.busy=false; }); } };
+    // Forget Drive entirely on this device, realm membership included.
+    // Local data is kept; reconnecting joins the pointer's realm as a
+    // new member and merges this data back in.
+    this.st={clientId:null,realm:null,generation:0,ptrId:null,fileId:null,remoteTime:null,token:null,tokenExp:0};
+    this.saveCfg();
+    this.status='off'; toast('Drive sync disconnected'); } };
 window.SyncRef=Sync;
 scheduleDriveSync=function(){           // called from saveNow(): push soon
   if(!Sync.configured()||!Sync.tokenValid()) return;
@@ -1703,7 +1770,10 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
   $('#m-note').textContent=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
     +DB.entries.filter(e=>!e.deleted).length+' entries, '
     +liveEdges().length+' links, '+liveViews().length+' views. '
-    +(Sync.configured()?('Drive: '+Sync.status+'.'):'Drive: not set up.');
+    +(Sync.configured()
+      ?('Drive: '+Sync.status
+        +(Sync.st.realm?(' · '+Sync.st.realm+' g'+(Sync.st.generation||0)):'')+'.')
+      :'Drive: not set up.');
   $('#menu').classList.toggle('on'); },
   diagnostics(){
     const d=Sync.diagnostics();
@@ -1713,32 +1783,27 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
         ['deviceId',d.deviceId],
         ['sync configured',d.syncConfigured?'yes':'no'],
         ['token',d.token],
+        ['realm',d.realm],
+        ['generation',String(d.generation)],
         ['drive file id',d.fileId],
         ['remote modified',d.remoteModifiedTime],
-        ['sync epoch',String(d.syncEpoch)],
         ['entries/edges',d.tableCounts.entries+' / '+d.tableCounts.edges],
-        ['types/views/tabs',d.tableCounts.linkTypes+' / '+d.tableCounts.views+' / '+d.tableCounts.tabs],
-        ['duplicate tabs',d.duplicateTabs.dupes?('yes ('+d.duplicateTabs.dupes+')'):'none']
+        ['types/views/tabs',d.tableCounts.linkTypes+' / '+d.tableCounts.views+' / '+d.tableCounts.tabs]
       ];
       rows.forEach(([k,v])=>{
         const r=el('div','cfg-row');
         r.appendChild(el('span','nm',k));
         const vv=el('span','mt diag-val',v);
         r.appendChild(vv); body.appendChild(r); });
-      if(d.duplicateTabs.groups.length){
-        body.appendChild(el('div','f-lbl','Duplicate groups'));
-        d.duplicateTabs.groups.forEach(g=>body.appendChild(el('div','f-created',
-          g.cls+' ×'+g.count+' ('+g.ids.join(', ')+')')));
-      }
     });
   },
   snapshots(){
     Modal.push((m,body)=>{
       body.appendChild(el('div','f-lbl','Snapshots / restore'));
       body.appendChild(el('div','f-created',
-        'Restore replaces local data, increments sync epoch, and then syncs that restore.'));
-      const epoch=el('div','f-created','Current epoch: '+(DB.settings.syncEpoch||0));
-      body.appendChild(epoch);
+        'Restoring replaces the data of every synced device with the snapshot: a new realm is minted from its contents, and each device follows on its next sync.'));
+      if(Sync.st.realm)
+        body.appendChild(el('div','f-created','Current realm: '+Sync.st.realm+' · generation '+(Sync.st.generation||0)));
       const box=el('div'); body.appendChild(box);
       const renderFiles=(files)=>{
         box.innerHTML='';
@@ -1753,7 +1818,7 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
           r.appendChild(el('span','mt',fmtDT(f.modifiedTime||nowISO())));
           const rs=el('button','mini','Restore');
           rs.addEventListener('click',()=>{
-            if(!confirm('Restore snapshot "'+label+'" and overwrite local data?')) return;
+            if(!confirm('Restore snapshot "'+label+'" for ALL synced devices? Each device saves its own snapshot before following.')) return;
             Sync.restoreSnapshot(f).catch(()=>toast('Restore failed — try again')); });
           r.appendChild(rs);
           box.appendChild(r);
@@ -1776,32 +1841,24 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
       refresh();
     });
   },
-  // SEC:APP/UI/MENU: test tool. Wipes THIS device's store and re-seeds.
-  // Drive is untouched. Two sync invariants are handled explicitly:
-  //  1. Sync.st.remoteTime is cleared — otherwise pull()'s modifiedTime
-  //     short-circuit would skip the download and the next push would
-  //     overwrite Drive with the empty seed.
-  //  2. seed() leaves settings.dirty === false, so the pristine-adopt
-  //     rule makes the next pull ADOPT the Drive payload wholesale
-  //     (no duplicated keystone entries).
-  // Consequence: with sync connected, wiped data comes back on the next
-  // sync by design. Wipe Drive too (or disconnect) for a clean slate.
+  // Device-only reset. Realm membership is kept, so the next sync pulls
+  // the realm's data straight back — useful for exercising the join
+  // path. A reset that sticks everywhere is Sync.newRealm().
+  // Sync.st.remoteTime is cleared so pull()'s modifiedTime short-circuit
+  // cannot skip the download and let a push overwrite the realm file
+  // with the bare seed.
   wipeLocal(){
     const n=DB.entries.filter(e=>!e.deleted).length;
-    if(!confirm('Wipe local data on this device? '+n+' entries plus all links, views and tabs will be deleted and the app re-seeded. Google Drive is not touched.'
-      +(Sync.configured()?'\n\nDrive sync is connected: the next sync will re-adopt whatever is on Drive. Wipe Drive data too if you want a clean slate.':''))) return;
-    if(!confirm('Last chance \u2014 consider Export NDJSON first. Wipe local data now?')) return;
-    try{ localStorage.removeItem(STORE_KEY); }catch(e){}
-    DB={ v:2, entries:[],edges:[],linkTypes:[],views:[],tabs:[],
-      settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:false,syncEpoch:0} };
-    clearTimeout(Sync.pushTimer);                      // cancel any queued push of the old data
-    Sync.st.fileId=null; Sync.st.remoteTime=null; Sync.saveCfg();
-    initCounters();
-    seed();                                            // re-seeds, persists, dirty stays false
-    UI.tabId=liveTabs()[0]?.id;
-    UI.rerender();
-    toast(Sync.configured()
-      ?'Local data wiped \u2014 next sync re-adopts Drive data'
+    if(!confirm('Wipe local data on this device? '+n+' entries plus all links, views and tabs are deleted and the app re-seeded. '
+      +(Sync.configured()&&Sync.st.realm
+        ?'The device stays in its realm, so the next sync restores the realm\u2019s data.'
+        :'Google Drive is not touched.'))) return;
+    if(!confirm('Last chance — consider Export NDJSON first. Wipe local data now?')) return;
+    clearTimeout(Sync.pushTimer);                    // cancel any queued push of the old data
+    Sync.st.remoteTime=null; Sync.saveCfg();
+    resetLocalStore();
+    toast(Sync.configured()&&Sync.st.realm
+      ?'Local data wiped — next sync restores the realm'
       :'Local data wiped'); } };
 document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
 $('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
@@ -1815,7 +1872,7 @@ let importMode='merge';
 $('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
 $('#m-replace').addEventListener('click',()=>{importMode='replace';$('#importfile').click();$('#menu').classList.remove('on');});
 $('#m-wipelocal').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.wipeLocal(); });
-$('#m-wipedrive').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Sync.wipeDrive(); });
+$('#m-newrealm').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Sync.newRealm(); });
 $('#importfile').addEventListener('change',ev=>{
   const f=ev.target.files[0]; if(!f)return;
   const r=new FileReader(); r.onload=()=>importText(r.result,importMode); r.readAsText(f);

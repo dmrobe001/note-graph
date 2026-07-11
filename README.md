@@ -1,6 +1,6 @@
 # Articulate
 
-Version 2.0
+Version 3.0
 
 Articulate is a single-file, local-first web app for capturing atomic, timestamped
 notes and organizing them after the fact. It is built around one commitment: the
@@ -74,23 +74,67 @@ own last-used view.
 On first run with an empty store, Articulate creates: link types `child` and
 `ends`; entries `Status` (with children `Active`, `Someday`, `Done`, `Dead`)
 and `Intervals`; views `All`, `Active`, and `Statuses`; and the seven tabs
-above. Everything seeded is ordinary data — retitle or reconfigure at will.
-The `All` view and the `child`/`ends` types are locked against deletion
+above. Seed records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
+are identical on every device, so independently seeded stores contain
+literally the same records and merging them is a no-op — the seed can never
+duplicate. Everything seeded is ordinary data — retitle or reconfigure at
+will. The `All` view and the `child`/`ends` types are locked against deletion
 because pickers and merges fall back to them.
 
 ## Sync
 
-Sync is a convergent merge over a single NDJSON blob, with Google Drive as the
-transport. Every record's `updated_at` is a last-write-wins clock: merging is
-union by ID per table, newer record wins whole, tombstones ride the same
-clock. The merge is idempotent and order-insensitive, so devices may overwrite
-each other's uploads blindly — the next pull-merge-push restores the union.
-A store that contains nothing but its own seed *adopts* the first synced
-payload wholesale instead of merging, so a new device never duplicates the
-keystone entries.
+Sync is organized around **realms**. A realm is one shared dataset, named by a
+short random string; its state lives in a single Drive file,
+`capturelog-sync-<realm>.ndjson`. A well-known pointer file,
+`capturelog-realm.json`, records which realm the Drive account is currently
+on as `{realm, generation}`, where `generation` is a monotonic counter bumped
+each time a realm is minted.
 
-IDs are globally unique strings, `{deviceId}-{letter}{n}`, where the device id
-is per-install and never synced; records created offline on different devices
+Within a realm, sync is a convergent merge over the realm's NDJSON blob.
+Every record's `updated_at` is a last-write-wins clock: merging is union by
+ID per table, newer record wins whole, tombstones ride the same clock. The
+merge is idempotent and order-insensitive, so devices may overwrite each
+other's uploads blindly — the next pull-merge-push restores the union.
+Because seed ids are fixed, a freshly seeded device merges into a realm
+without duplicating anything.
+
+Every sync cycle begins by reading the pointer, then pulls, merges, and
+pushes the realm file. The pointer comparison gives each device its marching
+orders:
+
+- Pointer generation **above** the device's: the dataset was reset from
+  another device. The device preserves its current store to Drive as a
+  restorable snapshot (if it holds anything beyond the seed), wipes, re-seeds,
+  and joins the pointer's realm.
+- Pointer generation **below** the device's: the pointer is stale; the device
+  rewrites it.
+- Equal generations but different realms (two devices minted concurrently):
+  the lexicographically greater realm string wins — the same verdict on every
+  device, so all converge.
+- No pointer at all: the device publishes its own realm, minting one if it
+  has none.
+- A device that has data but no realm yet (used offline before its first
+  sync) joins the pointer's realm *without* a wipe; the ordinary merge unions
+  its records in.
+
+This makes global reset a first-class, single-tap operation. **⋯ menu → New
+realm (reset all)** snapshots the device's data, wipes and re-seeds it, mints
+a fresh realm at `generation+1`, and rewrites the pointer; every other device
+follows suit on its own next sync, each saving its own snapshot first.
+Restoring a snapshot works the same way: a new realm is minted whose contents
+are exactly the snapshot, and the pointer bump carries the restored state to
+every device. **Wipe local data** is the device-only variant: it clears and
+re-seeds one device, which then pulls the realm's data straight back on its
+next sync.
+
+Devices or app builds that never read the pointer keep writing to whatever
+filename they know; no realm member ever reads those files, so they are
+harmless. Files of abandoned realms and of pointer-unaware builds accumulate
+in Drive as inert clutter and can be deleted there by hand at leisure.
+
+IDs are globally unique strings — `{deviceId}-{letter}{n}` for user-created
+records (the device id is per-install and never synced) and fixed `seed-…`
+strings for seeded records — so records created offline on different devices
 cannot collide.
 
 ### Drive setup
@@ -114,8 +158,10 @@ cannot collide.
    any edit, all silently while a token is live. Sign-in is only ever
    requested in response to a tap.
 
-The synced file, `capturelog-sync.ndjson`, is visible in Drive as ordinary
-NDJSON — downloadable and importable by hand, independent of the app.
+The synced files — the realm blob `capturelog-sync-<realm>.ndjson`, the
+pointer `capturelog-realm.json`, and any `capturelog-snapshot-….ndjson` — are
+visible in Drive as ordinary JSON/NDJSON, downloadable and importable by
+hand, independent of the app.
 
 ## Data portability
 
@@ -128,8 +174,10 @@ imported automatically at boot if found) and migrates them on the way in.
 
 Wire-level identifiers are stable across releases and intentionally not
 renamed with the app: the localStorage keys `capturelog.v2`,
-`capturelog.device`, and `capturelog.sync`, the Drive filename
-`capturelog-sync.ndjson`, and the NDJSON record tags. Data outlives naming.
+`capturelog.device`, and `capturelog.sync`, the Drive filenames
+`capturelog-realm.json`, `capturelog-sync-<realm>.ndjson`, and
+`capturelog-snapshot-….ndjson`, and the NDJSON record tags. Data outlives
+naming.
 
 ## Code map
 
@@ -141,6 +189,6 @@ the file. `grep -n "SEC:" articulate.html` prints the skeleton;
 
 ## Versioning
 
-Articulate uses a plain incremented version (this is 2.0), recorded here and
+Articulate uses a plain incremented version (this is 3.0), recorded here and
 in the `SEC:HEADER` manifest. Storage identifiers do not change with the
 version.
