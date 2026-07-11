@@ -87,7 +87,7 @@
            SEC:APP/UI/PANEL_EXCL   exclusive swap panel
            SEC:APP/UI/EDIT_VIEW    view editor modal
            SEC:APP/UI/EDIT_TAB     tab config modal
-           SEC:APP/UI/MENU         export/import/status menu
+           SEC:APP/UI/MENU         export/import/status menu + wipe tools
          SEC:APP/BOOT            init
      ==== SEC:HEADER (END) ========================================== -->
 <html lang="en">
@@ -240,6 +240,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 #menu.on{display:block}
 #menu button{display:block;width:100%;text-align:left;padding:12px 15px;font-size:14px}
 #menu button:active{background:var(--surface)}
+#menu button.danger{color:var(--danger);border-top:1px solid var(--line)}
+#menu button.danger+button.danger{border-top:none}
 #menu .note{padding:8px 15px 11px;font-size:11px;color:var(--faint);border-top:1px solid var(--line)}
 .diag-val{max-width:58%;text-align:right;word-break:break-all} /* keeps diagnostics rows readable on narrow screens */
 .iconbtn{color:var(--muted);font-size:19px;padding:2px 8px}
@@ -271,6 +273,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
   <button id="m-export">Export NDJSON</button>
   <button id="m-import">Import &amp; merge…</button>
   <button id="m-replace">Import &amp; replace…</button>
+  <button id="m-wipelocal" class="danger" aria-label="Wipe all local data on this device">Wipe local data…</button>
+  <button id="m-wipedrive" class="danger" aria-label="Delete all Articulate files from Google Drive">Wipe Drive data…</button>
   <div class="note" id="m-note"></div>
 </div>
 <input type="file" id="importfile" accept=".ndjson,.txt,.json" style="display:none">
@@ -951,7 +955,39 @@ const Sync={
     }); },
   disconnect(){
     this.st={clientId:null,fileId:null,remoteTime:null,token:null,tokenExp:0}; this.saveCfg();
-    this.status='off'; toast('Drive sync disconnected'); } };
+    this.status='off'; toast('Drive sync disconnected'); },
+  // SEC:APP/SYNC: test tool. Deletes every app-created Articulate file on
+  // Drive (the sync blob + all snapshots; drive.file scope only sees files
+  // this app created). Local data is untouched — the NEXT sync from any
+  // device (including this one) recreates capturelog-sync.ndjson from that
+  // device's own store. For a fully clean slate, wipe Drive first, then
+  // wipe local on each device. Holds the busy flag so a background
+  // pull/push cannot race the deletes.
+  wipeDrive(){
+    if(!this.configured()){ toast('Set up Drive sync first'); return; }
+    if(this.busy){ toast('Sync in progress \u2014 try again in a moment'); return; }
+    this.busy=true; clearTimeout(this.pushTimer);
+    this.ensureToken(true)
+      .then(()=>{
+        const q=encodeURIComponent("(name='capturelog-sync.ndjson' or name contains 'capturelog-snapshot-') and trashed=false");
+        return this.api('https://www.googleapis.com/drive/v3/files?q='+q+'&fields=files(id,name)')
+          .then(r=>r.json()); })
+      .then(j=>{
+        const files=j.files||[];
+        if(!files.length){ toast('No Articulate files found on Drive'); return; }
+        const names=files.map(f=>f.name).join('\n');
+        if(!confirm('Delete '+files.length+' Articulate file(s) from Google Drive?\n\n'+names
+          +'\n\nLocal data on this device is kept. Any device that syncs afterwards will recreate the sync file from its own data.')) return;
+        return Promise.all(files.map(f=>
+            this.api('https://www.googleapis.com/drive/v3/files/'+f.id,{method:'DELETE'})))
+          .then(()=>{
+            // stale cache would 404 on the next pull; clear it now
+            this.st.fileId=null; this.st.remoteTime=null; this.saveCfg();
+            toast('Deleted '+files.length+' file(s) from Drive'); }); })
+      .catch(()=>{ toast(this.status==='need-auth'
+        ?'Sign-in didn\u2019t complete \u2014 check popups, then tap again'
+        :'Drive wipe failed \u2014 try again'); })
+      .finally(()=>{ this.busy=false; }); } };
 window.SyncRef=Sync;
 scheduleDriveSync=function(){           // called from saveNow(): push soon
   if(!Sync.configured()||!Sync.tokenValid()) return;
@@ -1739,7 +1775,34 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
       rf.addEventListener('click',refresh); body.appendChild(rf);
       refresh();
     });
-  } };
+  },
+  // SEC:APP/UI/MENU: test tool. Wipes THIS device's store and re-seeds.
+  // Drive is untouched. Two sync invariants are handled explicitly:
+  //  1. Sync.st.remoteTime is cleared — otherwise pull()'s modifiedTime
+  //     short-circuit would skip the download and the next push would
+  //     overwrite Drive with the empty seed.
+  //  2. seed() leaves settings.dirty === false, so the pristine-adopt
+  //     rule makes the next pull ADOPT the Drive payload wholesale
+  //     (no duplicated keystone entries).
+  // Consequence: with sync connected, wiped data comes back on the next
+  // sync by design. Wipe Drive too (or disconnect) for a clean slate.
+  wipeLocal(){
+    const n=DB.entries.filter(e=>!e.deleted).length;
+    if(!confirm('Wipe local data on this device? '+n+' entries plus all links, views and tabs will be deleted and the app re-seeded. Google Drive is not touched.'
+      +(Sync.configured()?'\n\nDrive sync is connected: the next sync will re-adopt whatever is on Drive. Wipe Drive data too if you want a clean slate.':''))) return;
+    if(!confirm('Last chance \u2014 consider Export NDJSON first. Wipe local data now?')) return;
+    try{ localStorage.removeItem(STORE_KEY); }catch(e){}
+    DB={ v:2, entries:[],edges:[],linkTypes:[],views:[],tabs:[],
+      settings:{allViewId:null,mem:{},migratedV1:true,idsMigrated:true,dirty:false,syncEpoch:0} };
+    clearTimeout(Sync.pushTimer);                      // cancel any queued push of the old data
+    Sync.st.fileId=null; Sync.st.remoteTime=null; Sync.saveCfg();
+    initCounters();
+    seed();                                            // re-seeds, persists, dirty stays false
+    UI.tabId=liveTabs()[0]?.id;
+    UI.rerender();
+    toast(Sync.configured()
+      ?'Local data wiped \u2014 next sync re-adopts Drive data'
+      :'Local data wiped'); } };
 document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
 $('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
   if(!Sync.configured()) Sync.setup(); else Sync.syncNow(true); });
@@ -1751,6 +1814,8 @@ $('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList
 let importMode='merge';
 $('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
 $('#m-replace').addEventListener('click',()=>{importMode='replace';$('#importfile').click();$('#menu').classList.remove('on');});
+$('#m-wipelocal').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.wipeLocal(); });
+$('#m-wipedrive').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Sync.wipeDrive(); });
 $('#importfile').addEventListener('change',ev=>{
   const f=ev.target.files[0]; if(!f)return;
   const r=new FileReader(); r.onload=()=>importText(r.result,importMode); r.readAsText(f);
