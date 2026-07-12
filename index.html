@@ -189,9 +189,18 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 
 /* ==== SEC:STYLE/FORMS (BEGIN) ==== */
 .f-toprow{display:flex;gap:8px;align-items:center;margin:2px 0 10px}
-.f-toprow input[type=datetime-local]{padding:7px 5px;font-family:var(--mono);font-size:12px;
-  color-scheme:dark;background:transparent;border-color:transparent;flex-shrink:0}
-.f-toprow input[type=datetime-local]:focus{border-color:var(--accent-dim);background:var(--surface2)}
+/* The timestamp is a tap-to-edit label (native inline datetime widgets
+   can't follow the display rules or drop their picker arrow); the real
+   input is invisible underneath and only its picker dialog is used. */
+.tsbtn{position:relative;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  min-width:44px;min-height:44px;padding:4px 8px;border-radius:10px;cursor:pointer;color-scheme:dark}
+.tsbtn:active{background:var(--surface2)}
+.tsbtn .tslbl{display:flex;flex-direction:column;line-height:1.15;text-align:center;
+  font-family:var(--mono);pointer-events:none}
+.tsbtn .tslbl .d{font-size:10px;color:var(--faint)}
+.tsbtn .tslbl .t{font-size:13px;color:var(--muted)}
+.tsbtn .tsnative{position:absolute;inset:0;width:100%;height:100%;
+  opacity:0;border:0;padding:0;pointer-events:none}
 .f-toprow .f-title{flex:1;min-width:0;margin:0}
 .tbtn-add{width:44px;height:44px;flex-shrink:0;color:var(--accent);font-size:20px;
   border:1px solid var(--accent-dim);border-radius:10px}
@@ -276,19 +285,20 @@ const nowISO = () => new Date().toISOString();
 // Timestamp display: today -> "14:05"; within the last week ->
 // "tue 14:05"; older or future -> "tue 7 jul 14:05"; and outside the
 // current year the two-digit year follows the month: "tue 7 jul 25 14:05".
-function fmtDT(iso){
-  const d=new Date(iso); if(isNaN(d)) return '';
+// fmtDTParts returns {date, time}; date is '' when the moment is today.
+function fmtDTParts(iso){
+  const d=new Date(iso); if(isNaN(d)) return {date:'',time:''};
   const now=new Date(), p=n=>String(n).padStart(2,'0');
   const time=p(d.getHours())+':'+p(d.getMinutes());
   const day0=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate());
   const ago=(day0(now)-day0(d))/86400000;          // whole days in the past
-  if(ago===0) return time;
+  if(ago===0) return {date:'',time};
   const dow=['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
-  if(ago>0&&ago<7) return dow+' '+time;
+  if(ago>0&&ago<7) return {date:dow,time};
   const mon=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][d.getMonth()];
-  return dow+' '+d.getDate()+' '+mon
-    +(d.getFullYear()===now.getFullYear()?'':' '+p(d.getFullYear()%100))
-    +' '+time; }
+  return {date:dow+' '+d.getDate()+' '+mon
+    +(d.getFullYear()===now.getFullYear()?'':' '+p(d.getFullYear()%100)),time}; }
+function fmtDT(iso){ const x=fmtDTParts(iso); return x.date?x.date+' '+x.time:x.time; }
 function fmtDur(ms){ if(ms<0)ms=0; const m=Math.round(ms/60000);
   if(m<60) return m+'m'; const h=Math.floor(m/60),r=m%60; return r? h+'h '+r+'m' : h+'h'; }
 function toLocalInput(iso){ const d=new Date(iso),p=n=>String(n).padStart(2,'0');
@@ -1088,7 +1098,7 @@ function renderTabbar(){
     b.appendChild(el('span',null,{create:'new',interval:'clock',explore:'explore',
       exclusive:'set',views:'views',links:'links',tabs:'tabs'}[t.cls]));
     b.addEventListener('click',()=>{
-      if(t.cls==='create'&&UI.tabId===t.id){ tabState(t.id).draftId=null; }  // recommit gesture
+      if(t.cls==='create') freshenDraft(t);   // arriving OR re-tapping starts a new entry
       UI.tabId=t.id; UI.rerender(); });
     bar.appendChild(b); });
   // The ⋯ tab is synthetic — appended after the data tabs on every
@@ -1240,11 +1250,32 @@ function linksField(container,entryId,fieldKey,afterChange){
 // title, and ＋. ＋ creates a new child entry and opens its editor as a
 // stacked sheet whose offset keeps this row visible; each further ＋
 // stacks and offsets again.
+// Tap-to-edit timestamp: label per the display rules (time only when
+// today; otherwise date over time, compactly stacked), with a hidden
+// native input whose picker DIALOG is launched on tap via showPicker().
+function tsField(e){
+  const box=el('div','tsbtn');
+  const lbl=el('span','tslbl'); box.appendChild(lbl);
+  const paint=()=>{ lbl.innerHTML='';
+    const x=fmtDTParts((getEntry(e.id)||e).ts);
+    if(x.date) lbl.appendChild(el('span','d',x.date));
+    lbl.appendChild(el('span','t',x.time)); };
+  paint();
+  const inp=el('input','tsnative'); inp.type='datetime-local';
+  inp.setAttribute('tabindex','-1'); inp.setAttribute('aria-hidden','true');
+  inp.addEventListener('change',()=>{ const iso=fromLocalInput(inp.value);
+    if(iso){ updateEntry(e.id,{ts:iso}); paint(); } });
+  box.appendChild(inp);
+  box.setAttribute('role','button');
+  box.setAttribute('aria-label','Edit timestamp');
+  box.addEventListener('click',()=>{
+    inp.value=toLocalInput((getEntry(e.id)||e).ts);
+    try{ inp.showPicker ? inp.showPicker() : inp.focus(); }
+    catch(err){ inp.focus(); } });
+  return box; }
 function entryTopRow(e){
   const top=el('div','f-toprow');
-  const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
-  ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value); if(iso)updateEntry(e.id,{ts:iso});});
-  top.appendChild(ti);
+  top.appendChild(tsField(e));
   const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
   title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
   top.appendChild(title);
@@ -1258,10 +1289,19 @@ function entryTopRow(e){
 // ==== SEC:APP/UI/CHIPS (END) ====
 
 // ==== SEC:APP/UI/TAB_CREATE (BEGIN) ====
-// "＋": entering the tab creates a committed, timestamped entry at once,
-// and re-tapping the already-active tab starts the next one — the tab
-// gesture is the only "new entry" control; there is no button. Defaults
-// from tab cfg are applied at birth. Edits stream straight into the row.
+// "＋": selecting the tab — whether arriving from another tab or
+// re-tapping the active one — always presents a NEW entry; the tab
+// gesture is the only "new entry" control, there is no button. An
+// untouched draft (no title, no body) is reused with its timestamp
+// bumped to now, so idle visits don't strew empty entries; a draft with
+// any content is left behind as a committed entry and a fresh one
+// starts. Defaults from tab cfg are applied at birth. Edits stream
+// straight into the row.
+function freshenDraft(tab){
+  const st=tabState(tab.id);
+  const d=st.draftId?getEntry(st.draftId):null;
+  if(d&&!d.deleted&&!d.title&&!d.body) updateEntry(d.id,{ts:nowISO()});
+  else st.draftId=null; }
 function ensureDraft(tab){
   const st=tabState(tab.id);
   if(st.draftId&&getEntry(st.draftId)) return getEntry(st.draftId);

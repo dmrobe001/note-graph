@@ -47,8 +47,10 @@ are soft (tombstones). Every record carries `updated_at` for merging.
 
 - **create** (seeded ＋) — opens with a fresh committed entry: timestamp,
   Title field, focused body, Links field. Links are added through the entry
-  picker; each chip shows its link type, tappable to change. Re-tapping the
-  tab commits the current entry and starts another. Duplicated create tabs can
+  picker; each chip shows its link type, tappable to change. Selecting the
+  tab — arriving from elsewhere or re-tapping it — commits the current entry
+  and starts another (an untouched draft is reused with a fresh timestamp
+  rather than left behind empty). Duplicated create tabs can
   carry default titles, bodies, and links, making them stencils for repeated
   entry shapes.
 - **interval** (seeded 🕓) — a root entry is chosen (seeded: "Intervals");
