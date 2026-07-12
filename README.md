@@ -34,8 +34,11 @@ link types that count as containment for that view's traversal. A view with no
 conditions matches everything; the seeded "All" view is the universal fallback.
 
 **Tabs** are stored configuration, not code. Each tab row has a class and a
-small config, and the tab bar renders whatever rows exist. Tabs can be
-renamed, reordered, duplicated, and configured from inside the app.
+small config, and the tab bar — pinned to the top of the screen — renders
+whatever rows exist. Tabs can be renamed, reordered, duplicated, and
+configured from inside the app. One tab is synthetic rather than stored: the
+⋯ tab, appended after the data tabs on every device, which carries sync,
+export/import, snapshots, and the reset actions.
 
 All cross-references are by ID, so retitling anything is always safe. Deletes
 are soft (tombstones). Every record carries `updated_at` for merging.
@@ -63,6 +66,9 @@ are soft (tombstones). Every record carries `updated_at` for merging.
   one — exactly-one membership, enforced by the gesture and self-healing.
 - **views / links / tabs** (🔎 🔗 🕮) — the engine's own configuration:
   view editing, link-type management, and tab management.
+- **⋯ (menu)** — synthetic, always last: Drive sync and settings,
+  diagnostics, snapshots/restore, NDJSON export/import, and the two resets
+  (wipe local, new realm).
 
 The entry picker used everywhere combines a search field with a collapsible,
 view-filtered tree. While search text is present, every row shows a ＋ that
@@ -73,8 +79,9 @@ own last-used view.
 
 On first run with an empty store, Articulate creates: link types `child` and
 `ends`; entries `Status` (with children `Active`, `Someday`, `Done`, `Dead`)
-and `Intervals`; views `All`, `Active`, and `Statuses`; and the seven tabs
-above. Seed records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
+and `Intervals`; views `All`, `Active`, and `Statuses` (`All` counts both
+`child` and `ends` links as containment); and the seven tabs above. Seed
+records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
 are identical on every device, so independently seeded stores contain
 literally the same records and merging them is a no-op — the seed can never
 duplicate. Everything seeded is ordinary data — retitle or reconfigure at
@@ -117,7 +124,7 @@ orders:
   sync) joins the pointer's realm *without* a wipe; the ordinary merge unions
   its records in.
 
-This makes global reset a first-class, single-tap operation. **⋯ menu → New
+This makes global reset a first-class, single-tap operation. **⋯ tab → New
 realm (reset all)** snapshots the device's data, wipes and re-seeds it, mints
 a fresh realm at `generation+1`, and rewrites the pointer; every other device
 follows suit on its own next sync, each saving its own snapshot first.
@@ -152,8 +159,8 @@ cannot collide.
    `SEC:APP/SYNC` and commit. The client ID is a public identifier — security
    comes from the origin allowlist and the consent screen, not from secrecy —
    so committing it to a public repository is standard practice. The in-app
-   sheet (⋯ → Drive settings) can override it per device.
-5. On each device: ⋯ menu → Sync now → sign in once. Tokens are cached for
+   sheet (⋯ tab → Drive settings) can override it per device.
+5. On each device: ⋯ tab → Sync now → sign in once. Tokens are cached for
    about an hour; syncs run at load, every five minutes, and shortly after
    any edit, all silently while a token is live. Sign-in is only ever
    requested in response to a tap.
@@ -165,7 +172,7 @@ hand, independent of the app.
 
 ## Data portability
 
-⋯ menu → **Export NDJSON** downloads the full store (entries, edges, link
+⋯ tab → **Export NDJSON** downloads the full store (entries, edges, link
 types, views, tabs, and a settings line). **Import & merge** unions a file
 into the current store by the same rules as sync. **Import & replace** swaps
 the store for the file's contents; it also accepts files in legacy formats

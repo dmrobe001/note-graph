@@ -86,7 +86,7 @@
            SEC:APP/UI/PANEL_EXCL   exclusive swap panel
            SEC:APP/UI/EDIT_VIEW    view editor modal
            SEC:APP/UI/EDIT_TAB     tab config modal
-           SEC:APP/UI/MENU         export/import/status menu + resets
+           SEC:APP/UI/MENU         the ⋯ tab: sync/export/resets
          SEC:APP/BOOT            init
      ==== SEC:HEADER (END) ========================================== -->
 <html lang="en">
@@ -115,10 +115,7 @@ html,body{height:100%}
 body{background:var(--bg);color:var(--ink);font:16px/1.45 var(--sans);
   -webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
 #app{display:flex;flex-direction:column;height:100dvh}
-#view{flex:1;overflow-y:auto;padding:12px 14px calc(76px + env(safe-area-inset-bottom))}
-h2.viewtitle{font-size:13px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;
-  color:var(--muted);margin:6px 2px 12px;display:flex;align-items:center;gap:8px}
-h2.viewtitle .spacer{flex:1}
+#view{flex:1;overflow-y:auto;padding:12px 14px calc(28px + env(safe-area-inset-bottom))}
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;-webkit-tap-highlight-color:transparent}
 input,textarea,select{font:inherit;color:var(--ink);background:var(--surface2);
   border:1px solid var(--line);border-radius:var(--r);outline:none}
@@ -142,10 +139,10 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/RUNBAR (END) ==== */
 
 /* ==== SEC:STYLE/NAV (BEGIN) ==== */
-#tabs{position:fixed;bottom:0;left:0;right:0;display:flex;overflow-x:auto;
-  background:color-mix(in srgb,var(--bg) 88%,black);backdrop-filter:blur(8px);
-  border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
-#tabs button{flex:1 0 60px;padding:11px 4px 9px;color:var(--faint);font-size:11px;
+#tabs{display:flex;overflow-x:auto;flex-shrink:0;
+  background:color-mix(in srgb,var(--bg) 88%,black);
+  border-bottom:1px solid var(--line);padding-top:env(safe-area-inset-top)}
+#tabs button{flex:1 0 60px;padding:9px 4px 11px;color:var(--faint);font-size:11px;
   display:flex;flex-direction:column;align-items:center;gap:3px;white-space:nowrap}
 #tabs button .ico{font-size:20px;line-height:1}
 #tabs button.active{color:var(--ink)}
@@ -153,17 +150,20 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/NAV (END) ==== */
 
 /* ==== SEC:STYLE/TREE (BEGIN) ==== */
-.trow{display:flex;align-items:center;gap:2px;padding:8px 6px;border-radius:10px;width:100%;text-align:left}
+.trow{display:flex;align-items:center;gap:2px;padding:2px 4px;border-radius:10px;width:100%;text-align:left}
 .trow:active{background:var(--surface)}
-.trow .chev{width:28px;flex-shrink:0;text-align:center;color:var(--faint);font-size:13px}
+/* 44x44 minimum touch targets (Apple HIG 44pt / WCAG 2.5.5) for the
+   collapse, expand-all, and row-action buttons; glyphs stay modest. */
+.trow .chev{width:44px;height:44px;flex-shrink:0;display:flex;align-items:center;
+  justify-content:center;color:var(--faint);font-size:15px}
 .trow .nm{flex:1;min-width:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .trow .nm.untitled{color:var(--muted);font-style:italic}
 .trow .nm.hit{color:var(--accent)}
 .trow .cnt{font-family:var(--mono);font-size:11px;color:var(--faint);padding:0 4px}
-.trow .tbtn{width:32px;height:32px;flex-shrink:0;color:var(--faint);font-size:14px;
-  border:1px solid transparent;border-radius:8px}
+.trow .tbtn{width:44px;height:44px;flex-shrink:0;color:var(--faint);font-size:16px;
+  border:1px solid transparent;border-radius:10px;display:flex;align-items:center;justify-content:center}
 .trow .tbtn.add{color:var(--accent)}
-.trow .tbtn.end{color:var(--accent);border-color:var(--accent-dim);font-size:12px;width:auto;padding:0 10px}
+.trow .tbtn.end{color:var(--accent);border-color:var(--accent-dim);font-size:12px;width:auto;padding:0 12px}
 .flatrow{display:block;width:100%;text-align:left;padding:8px 6px;border-radius:10px}
 .flatrow:active{background:var(--surface)}
 .flatrow .path{font-family:var(--mono);font-size:11px;color:var(--faint);
@@ -188,9 +188,13 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/CHIPS (END) ==== */
 
 /* ==== SEC:STYLE/FORMS (BEGIN) ==== */
-.f-ts{display:flex;gap:10px;align-items:baseline;margin:2px 0 10px;flex-wrap:wrap}
-.f-ts input{padding:7px 9px;font-family:var(--mono);font-size:13px;color-scheme:dark;background:transparent;border-color:transparent}
-.f-ts input:focus{border-color:var(--accent-dim);background:var(--surface2)}
+.f-toprow{display:flex;gap:8px;align-items:center;margin:2px 0 10px}
+.f-toprow input[type=datetime-local]{padding:7px 5px;font-family:var(--mono);font-size:12px;
+  color-scheme:dark;background:transparent;border-color:transparent;flex-shrink:0}
+.f-toprow input[type=datetime-local]:focus{border-color:var(--accent-dim);background:var(--surface2)}
+.f-toprow .f-title{flex:1;min-width:0;margin:0}
+.tbtn-add{width:44px;height:44px;flex-shrink:0;color:var(--accent);font-size:20px;
+  border:1px solid var(--accent-dim);border-radius:10px}
 .f-created{font-family:var(--mono);font-size:11px;color:var(--faint)}
 .f-title{width:100%;padding:10px 12px;font-size:15px;margin-bottom:8px;background:transparent;border:1px dashed var(--line)}
 .f-title:focus{border-style:solid}
@@ -200,10 +204,12 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 .f-field{padding:10px 12px;border:1px dashed var(--line);border-radius:var(--r);
   color:var(--faint);font-size:14px;width:100%;text-align:left}
 .f-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.f-row .f-field{flex:1;width:auto;min-width:0}
 .bigbtn{margin-top:14px;width:100%;padding:12px;border:1px solid var(--line);
   border-radius:var(--r);color:var(--muted);font-size:14px;background:var(--surface)}
 .bigbtn.go{color:var(--accent);border-color:var(--accent-dim)}
 .dangerbtn{margin-top:18px;color:var(--danger);font-size:13px;padding:9px 0}
+.bigbtn.danger{color:var(--danger);border-color:#4a332e}
 /* ==== SEC:STYLE/FORMS (END) ==== */
 
 /* ==== SEC:STYLE/LISTS (BEGIN) ==== */
@@ -222,7 +228,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 #scrim.on{display:block}
 .modal{position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--surface);
   border-radius:18px 18px 0 0;border-top:1px solid var(--line);
-  max-height:90dvh;display:flex;flex-direction:column}
+  display:flex;flex-direction:column}  /* top set per stack depth in Modal.render */
 .modal .grip{width:38px;height:4px;border-radius:2px;background:var(--line);margin:10px auto 4px;flex-shrink:0}
 .modal .mbody{overflow-y:auto;padding:8px 16px calc(24px + env(safe-area-inset-bottom))}
 .modal .mtop{display:flex;gap:10px;padding:6px 16px 10px;align-items:center;flex-shrink:0}
@@ -233,18 +239,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/MISC (BEGIN) ==== */
 #membanner{display:none;background:#3a2f1a;color:var(--amber);font-size:12px;padding:7px 14px;text-align:center}
 #membanner.on{display:block}
-#menu{position:fixed;right:12px;top:52px;z-index:60;background:var(--surface2);
-  border:1px solid var(--line);border-radius:var(--r);display:none;min-width:220px;
-  box-shadow:0 10px 30px rgba(0,0,0,.5)}
-#menu.on{display:block}
-#menu button{display:block;width:100%;text-align:left;padding:12px 15px;font-size:14px}
-#menu button:active{background:var(--surface)}
-#menu button.danger{color:var(--danger);border-top:1px solid var(--line)}
-#menu button.danger+button.danger{border-top:none}
-#menu .note{padding:8px 15px 11px;font-size:11px;color:var(--faint);border-top:1px solid var(--line)}
 .diag-val{max-width:58%;text-align:right;word-break:break-all} /* keeps diagnostics rows readable on narrow screens */
-.iconbtn{color:var(--muted);font-size:19px;padding:2px 8px}
-#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:70;
+#toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:70;
   background:var(--surface2);border:1px solid var(--line);border-radius:999px;
   padding:8px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
@@ -258,24 +254,12 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 <!-- ==== SEC:MARKUP (BEGIN) ========================================== -->
 <div id="app">
   <div id="membanner">Memory-only mode — storage unavailable here. Export from ⋯ to keep data.</div>
+  <nav id="tabs"></nav>
   <div id="runbar"><span class="dot"></span></div>
   <div id="view"></div>
-  <nav id="tabs"></nav>
 </div>
 <div id="scrim"></div>
 <div id="mstack"></div>
-<div id="menu">
-  <button id="m-sync">Drive sync</button>
-  <button id="m-syncoff" style="display:none">Drive settings…</button>
-  <button id="m-diag" aria-label="View sync diagnostics">Sync diagnostics…</button>
-  <button id="m-restore" aria-label="Manage snapshots and restore data">Snapshots / restore…</button>
-  <button id="m-export">Export NDJSON</button>
-  <button id="m-import">Import &amp; merge…</button>
-  <button id="m-replace">Import &amp; replace…</button>
-  <button id="m-wipelocal" class="danger" aria-label="Wipe all local data on this device">Wipe local data…</button>
-  <button id="m-newrealm" class="danger" aria-label="Reset all devices by starting a new realm">New realm (reset all)…</button>
-  <div class="note" id="m-note"></div>
-</div>
 <input type="file" id="importfile" accept=".ndjson,.txt,.json" style="display:none">
 <div id="toast"></div>
 <!-- ==== SEC:MARKUP (END) ============================================ -->
@@ -289,15 +273,28 @@ const $  = s => document.querySelector(s);
 const el = (tag, cls, txt) => { const e=document.createElement(tag);
   if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
 const nowISO = () => new Date().toISOString();
-function fmtClock(iso){ return new Date(iso).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}); }
-function fmtDay(iso){ return new Date(iso).toLocaleDateString([],{year:'numeric',month:'short',day:'numeric'}); }
-function fmtDT(iso){ return fmtDay(iso)+' '+fmtClock(iso); }
+// Timestamp display: today -> "14:05"; within the last week ->
+// "tue 14:05"; older or future -> "tue 7 jul 14:05"; and outside the
+// current year the two-digit year follows the month: "tue 7 jul 25 14:05".
+function fmtDT(iso){
+  const d=new Date(iso); if(isNaN(d)) return '';
+  const now=new Date(), p=n=>String(n).padStart(2,'0');
+  const time=p(d.getHours())+':'+p(d.getMinutes());
+  const day0=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate());
+  const ago=(day0(now)-day0(d))/86400000;          // whole days in the past
+  if(ago===0) return time;
+  const dow=['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
+  if(ago>0&&ago<7) return dow+' '+time;
+  const mon=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][d.getMonth()];
+  return dow+' '+d.getDate()+' '+mon
+    +(d.getFullYear()===now.getFullYear()?'':' '+p(d.getFullYear()%100))
+    +' '+time; }
 function fmtDur(ms){ if(ms<0)ms=0; const m=Math.round(ms/60000);
   if(m<60) return m+'m'; const h=Math.floor(m/60),r=m%60; return r? h+'h '+r+'m' : h+'h'; }
 function toLocalInput(iso){ const d=new Date(iso),p=n=>String(n).padStart(2,'0');
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+p(d.getHours())+':'+p(d.getMinutes()); }
 function fromLocalInput(v){ const d=new Date(v); return isNaN(d)?null:d.toISOString(); }
-function disp(e){ return e.title || (e.body||'').split('\n')[0].slice(0,60) || '· '+fmtClock(e.created_at); }
+function disp(e){ return e.title || (e.body||'').split('\n')[0].slice(0,60) || '· '+fmtDT(e.ts); }
 let toastTimer=null;
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),1700); }
@@ -485,7 +482,7 @@ function seed(){
   [active,someday,done,dead].forEach(s=>
     mkEdge('seed-g-'+s.id.slice('seed-e-'.length)+'-status',s,status,child));
   const intervals=mkEntry('seed-e-intervals','Intervals');
-  const all=mkView('seed-v-all',{name:'All',type_ids:[child.id],locked:1});
+  const all=mkView('seed-v-all',{name:'All',type_ids:[child.id,ends.id],locked:1});
   const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
   const vStat=mkView('seed-v-statuses',{name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
   DB.settings.allViewId=all.id;
@@ -708,7 +705,7 @@ function mergeDB(nd){
   Object.entries((nd.settings&&nd.settings.mem)||{}).forEach(([k,v])=>{
     if(!(k in DB.settings.mem)) DB.settings.mem[k]=v; });   // local field memory wins
   DB.settings.dirty=true;
-  if(UI.tabId&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
+  if(UI.tabId&&UI.tabId!=='menu'&&!getTab(UI.tabId)) UI.tabId=liveTabs()[0]?.id||null;
   saveNow({schedule:false}); } // SEC:APP/MERGE: sync-internal writes must not queue another sync
 // ==== SEC:APP/MERGE (END) ====
 
@@ -1075,11 +1072,13 @@ function tabState(id){ return UI.state[id]||(UI.state[id]={}); }
 UI.rerender=function(){
   renderRunbar(); renderTabbar();
   const v=$('#view'); v.innerHTML='';
-  const tab=getTab(UI.tabId)||liveTabs()[0]; if(!tab){return;}
+  const tab=UI.tabId==='menu' ? {id:'menu',cls:'menu'}
+    : (getTab(UI.tabId)||liveTabs()[0]);
+  if(!tab){return;}
   UI.tabId=tab.id;
   ({create:renderCreate,interval:renderInterval,explore:renderExplore,
     exclusive:renderExclusive,views:renderViews,links:renderLinks,
-    tabs:renderTabs})[tab.cls](v,tab);
+    tabs:renderTabs,menu:renderMenuTab})[tab.cls](v,tab);
 };
 function renderTabbar(){
   const bar=$('#tabs'); bar.innerHTML='';
@@ -1092,6 +1091,13 @@ function renderTabbar(){
       if(t.cls==='create'&&UI.tabId===t.id){ tabState(t.id).draftId=null; }  // recommit gesture
       UI.tabId=t.id; UI.rerender(); });
     bar.appendChild(b); });
+  // The ⋯ tab is synthetic — appended after the data tabs on every
+  // device regardless of DB contents, so sync/export is never lost.
+  const mb=el('button',UI.tabId==='menu'?'active':'');
+  mb.appendChild(el('span','ico','⋯'));
+  mb.appendChild(el('span',null,'menu'));
+  mb.addEventListener('click',()=>{ UI.tabId='menu'; UI.rerender(); });
+  bar.appendChild(mb);
 }
 // ==== SEC:APP/UI/ROOT (END) ====
 
@@ -1126,6 +1132,11 @@ const Modal={ stack:[],
     $('#scrim').classList.toggle('on',!!this.stack.length);
     this.stack.forEach((r,i)=>{
       const m=el('div','modal'); m.style.zIndex=41+i;
+      // Sheets hang from near the top of the page; each deeper sheet
+      // drops just far enough to keep the sheet below it visible down
+      // to its top row (timestamp · title · ＋). Capped so a deep
+      // stack can't shrink into a sliver.
+      m.style.top='min(calc(env(safe-area-inset-top) + '+(104+i*64)+'px), 55dvh)';
       m.appendChild(el('div','grip'));
       const body=el('div','mbody'); m.appendChild(body);
       r(m,body); host.appendChild(m); }); } };
@@ -1166,17 +1177,17 @@ function renderTree(container,opts){
     if(kids.length) chev.addEventListener('click',ev=>{ ev.stopPropagation();
       open?opts.expand.delete(e.id):opts.expand.add(e.id); opts.refresh(); });
     row.appendChild(chev);
-    const nm=el('button','nm'+(e.title?'':' untitled')+((hits&&hits.has(e.id))?' hit':''),disp(e));
-    nm.style.textAlign='left';
-    nm.addEventListener('click',()=>opts.onPick(e));
-    row.appendChild(nm);
-    if(kids.length) row.appendChild(el('span','cnt',String(kids.length)));
     if(kids.length&&!open){ const dd=el('button','tbtn','⇊'); dd.title='Expand all';
       dd.addEventListener('click',ev=>{ ev.stopPropagation();
         const st=[e.id]; while(st.length){ const c=st.pop(); opts.expand.add(c);
           matchedChildren(c,include,typeIds).forEach(k=>st.push(k.id)); }
         opts.refresh(); });
       row.appendChild(dd); }
+    const nm=el('button','nm'+(e.title?'':' untitled')+((hits&&hits.has(e.id))?' hit':''),disp(e));
+    nm.style.textAlign='left';
+    nm.addEventListener('click',()=>opts.onPick(e));
+    row.appendChild(nm);
+    if(kids.length) row.appendChild(el('span','cnt',String(kids.length)));
     if(q){ const add=el('button','tbtn add','＋'); add.title='Create “'+q+'” under this';
       add.addEventListener('click',ev=>{ ev.stopPropagation();
         const n=createEntry({title:q});
@@ -1225,12 +1236,32 @@ function linksField(container,entryId,fieldKey,afterChange){
       addEdge(entryId,e.id,tid); afterChange(); }); });
   wrap.appendChild(add);
   container.appendChild(wrap); }
+// The entry top row shared by the create tab and the editor: timestamp,
+// title, and ＋. ＋ creates a new child entry and opens its editor as a
+// stacked sheet whose offset keeps this row visible; each further ＋
+// stacks and offsets again.
+function entryTopRow(e){
+  const top=el('div','f-toprow');
+  const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
+  ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value); if(iso)updateEntry(e.id,{ts:iso});});
+  top.appendChild(ti);
+  const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
+  title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
+  top.appendChild(title);
+  const add=el('button','tbtn-add','＋'); add.title='New entry under this one';
+  add.addEventListener('click',()=>{
+    const n=createEntry();
+    addEdge(n.id,e.id,(liveTypes().find(t=>t.name==='child')||liveTypes()[0]).id);
+    openEditor(n.id); });
+  top.appendChild(add);
+  return top; }
 // ==== SEC:APP/UI/CHIPS (END) ====
 
 // ==== SEC:APP/UI/TAB_CREATE (BEGIN) ====
-// "＋": entering the tab creates a committed, timestamped entry at once
-// (spec: on open and on re-tap). Defaults from tab cfg are applied at
-// birth. Edits stream straight into the row.
+// "＋": entering the tab creates a committed, timestamped entry at once,
+// and re-tapping the already-active tab starts the next one — the tab
+// gesture is the only "new entry" control; there is no button. Defaults
+// from tab cfg are applied at birth. Edits stream straight into the row.
 function ensureDraft(tab){
   const st=tabState(tab.id);
   if(st.draftId&&getEntry(st.draftId)) return getEntry(st.draftId);
@@ -1241,16 +1272,7 @@ function ensureDraft(tab){
 
 function renderCreate(v,tab){
   const e=ensureDraft(tab);
-  const tsrow=el('div','f-ts');
-  const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
-  ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value); if(iso)updateEntry(e.id,{ts:iso});});
-  tsrow.appendChild(ti);
-  tsrow.appendChild(el('span','f-created','committed '+fmtClock(e.created_at)));
-  v.appendChild(tsrow);
-
-  const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
-  title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
-  v.appendChild(title);
+  v.appendChild(entryTopRow(e));
 
   const body=el('textarea','f-body'); body.value=e.body||'';
   body.addEventListener('input',()=>updateEntry(e.id,{body:body.value||null}));
@@ -1259,10 +1281,6 @@ function renderCreate(v,tab){
   v.appendChild(el('div','f-lbl','Links'));
   const lf=el('div'); v.appendChild(lf);
   linksField(lf,e.id,'tab'+tab.id+'.links',()=>UI.rerender());
-
-  const nb=el('button','bigbtn','New entry (current is saved)');
-  nb.addEventListener('click',()=>{ tabState(tab.id).draftId=null; UI.rerender(); });
-  v.appendChild(nb);
   setTimeout(()=>body.focus(),40);
 }
 // ==== SEC:APP/UI/TAB_CREATE (END) ====
@@ -1274,11 +1292,6 @@ function renderCreate(v,tab){
 // the root. ＋ starts a new interval and opens its editor.
 function renderInterval(v,tab){
   const c=tab.cfg;
-  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode(tab.label+' intervals'));
-  hd.appendChild(el('span','spacer'));
-  const m=el('button','iconbtn','⋯'); m.addEventListener('click',Menu.toggle); hd.appendChild(m);
-  v.appendChild(hd);
-
   v.appendChild(el('div','f-lbl','Root'));
   const root=c.root_id?getEntry(c.root_id):null;
   const rf=el('button','f-field',root?disp(root):'root');
@@ -1326,16 +1339,14 @@ function viewField(container,fieldKey,fbId,onChange){
   container.appendChild(f); return view; }
 
 function renderExplore(v,tab){
-  const st=tabState(tab.id); st.expand=st.expand||new Set(); st.sort=st.sort||'tree';
-  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode(tab.label+' explore'));
-  hd.appendChild(el('span','spacer'));
-  const sortBtn=el('button','sorttog',{tree:'tree',ts:'by time',created:'by created'}[st.sort]);
-  sortBtn.addEventListener('click',()=>{ st.sort={tree:'ts',ts:'created',created:'tree'}[st.sort]; UI.rerender(); });
-  hd.appendChild(sortBtn);
-  const m=el('button','iconbtn','⋯'); m.addEventListener('click',Menu.toggle); hd.appendChild(m);
-  v.appendChild(hd);
-
-  const view=viewField(v,'tab'+tab.id+'.view',tab.cfg.view_id,()=>UI.rerender());
+  const st=tabState(tab.id); st.expand=st.expand||new Set();
+  st.sort=st.sort==='ts'?'ts':'tree';
+  const vrow=el('div','f-row'); vrow.style.flexWrap='nowrap';
+  const view=viewField(vrow,'tab'+tab.id+'.view',tab.cfg.view_id,()=>UI.rerender());
+  const sortBtn=el('button','sorttog',st.sort==='tree'?'tree':'by time');
+  sortBtn.addEventListener('click',()=>{ st.sort=st.sort==='tree'?'ts':'tree'; UI.rerender(); });
+  vrow.appendChild(sortBtn);
+  v.appendChild(vrow);
   const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
   q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
   v.appendChild(q);
@@ -1351,8 +1362,7 @@ function renderExplore(v,tab){
       let list=[...matched].map(getEntry).filter(Boolean);
       if(st.q&&st.q.trim())
         list=list.filter(e=>fuzzy(st.q.trim(),e.title?e.title:(e.body||''))>=0);
-      const key=st.sort==='ts'?'ts':'created_at';
-      list.sort((a,b)=>b[key].localeCompare(a[key]));
+      list.sort((a,b)=>b.ts.localeCompare(a.ts));
       if(!list.length){ box.appendChild(el('div','empty','No matches.')); return; }
       list.slice(0,300).forEach(e=>{
         const r=el('button','flatrow');
@@ -1362,7 +1372,7 @@ function renderExplore(v,tab){
           path.map(disp).join(' / ')+(extra>0?'  ·  +'+extra:'')));
         const line=el('div','line');
         line.appendChild(el('span','nm'+(e.title?'':' untitled'),disp(e)));
-        line.appendChild(el('span','tm',fmtDT(e[key])));
+        line.appendChild(el('span','tm',fmtDT(e.ts)));
         r.appendChild(line);
         r.addEventListener('click',()=>openEditor(e.id));
         box.appendChild(r); });
@@ -1377,7 +1387,6 @@ function renderExplore(v,tab){
 // exactly-one membership in the swap view is enforced by the gesture.
 function renderExclusive(v,tab){
   const st=tabState(tab.id); st.expand=st.expand||new Set();
-  v.appendChild(el('h2','viewtitle',tab.label+' set status'));
   const view=viewField(v,'tab'+tab.id+'.list',tab.cfg.list_view_id,()=>UI.rerender());
   const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
   q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
@@ -1393,17 +1402,17 @@ function renderExclusive(v,tab){
 // ==== SEC:APP/UI/TAB_VIEWS (BEGIN) ====
 function renderViews(v,tab){
   const st=tabState(tab.id); st.sort=st.sort||'name';
-  const hd=el('h2','viewtitle'); hd.appendChild(document.createTextNode('🔎 views'));
-  hd.appendChild(el('span','spacer'));
-  const s=el('button','sorttog',st.sort==='name'?'by name':'by count');
-  s.addEventListener('click',()=>{st.sort=st.sort==='name'?'count':'name';UI.rerender();});
-  hd.appendChild(s); v.appendChild(hd);
-
-  const nb=el('button','bigbtn','＋ New view'); nb.style.marginTop='0';
+  const row=el('div','f-row'); row.style.flexWrap='nowrap';
+  const nb=el('button','bigbtn','＋ New view');
+  nb.style.cssText='margin-top:0;flex:1;width:auto';
   nb.addEventListener('click',()=>{ const vw=createView({name:'new view',
     type_ids:[liveTypes().find(t=>t.name==='child').id]});
     openViewEditor(vw.id); });
-  v.appendChild(nb);
+  row.appendChild(nb);
+  const s=el('button','sorttog',st.sort==='name'?'by name':'by count');
+  s.addEventListener('click',()=>{st.sort=st.sort==='name'?'count':'name';UI.rerender();});
+  row.appendChild(s);
+  v.appendChild(row);
 
   const rows=liveViews().map(vw=>({vw,n:viewMatches(vw).size}));
   rows.sort((a,b)=> st.sort==='name'? a.vw.name.localeCompare(b.vw.name) : b.n-a.n);
@@ -1418,7 +1427,6 @@ function renderViews(v,tab){
 
 // ==== SEC:APP/UI/TAB_LINKS (BEGIN) ====
 function renderLinks(v){
-  v.appendChild(el('h2','viewtitle','🔗 link types'));
   const nb=el('button','bigbtn','＋ New link type'); nb.style.marginTop='0';
   nb.addEventListener('click',()=>{ const nm=prompt('Name for the new link type:');
     if(nm&&nm.trim()){ createLinkType(nm.trim()); UI.rerender(); } });
@@ -1443,7 +1451,6 @@ function renderLinks(v){
 // "🕮": rename, reorder, duplicate (workflow tabs only), delete, and
 // open per-class configuration. Engine tabs are fixed.
 function renderTabs(v){
-  v.appendChild(el('h2','viewtitle','🕮 tabs'));
   const engine=['views','links','tabs'];
   liveTabs().forEach((t,i,arr)=>{
     const r=el('div','cfg-row');
@@ -1474,22 +1481,13 @@ function renderTabs(v){
 // ==== SEC:APP/UI/TAB_TABS (END) ====
 
 // ==== SEC:APP/UI/EDITOR (BEGIN) ====
-// The entry editor: same anatomy as the create tab, plus backlinks,
-// 🔗＋ (new entry born as child of this one, editor stacks), and delete.
+// The entry editor: same anatomy as the create tab, plus backlinks and
+// delete. ＋ in the top row births a child and stacks its editor.
 function openEditor(entryId){
   Modal.push((m,body)=>{
     const e=getEntry(entryId);
     if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
-    const tsrow=el('div','f-ts');
-    const ti=el('input'); ti.type='datetime-local'; ti.value=toLocalInput(e.ts);
-    ti.addEventListener('change',()=>{const iso=fromLocalInput(ti.value);if(iso)updateEntry(e.id,{ts:iso});});
-    tsrow.appendChild(ti);
-    tsrow.appendChild(el('span','f-created','captured '+fmtDT(e.created_at)));
-    body.appendChild(tsrow);
-
-    const title=el('input','f-title'); title.placeholder='Title'; title.value=e.title||'';
-    title.addEventListener('input',()=>updateEntry(e.id,{title:title.value.trim()||null}));
-    body.appendChild(title);
+    body.appendChild(entryTopRow(e));
     const bd=el('textarea','f-body short'); bd.placeholder='Body'; bd.value=e.body||'';
     bd.addEventListener('input',()=>updateEntry(e.id,{body:bd.value||null}));
     body.appendChild(bd);
@@ -1505,13 +1503,6 @@ function openEditor(entryId){
       bl.slice(0,20).forEach(({node,type})=>
         row.appendChild(entryChip(node,{typeLabel:type.name,onTap:()=>openEditor(node.id)})));
       body.appendChild(row); }
-
-    const nb=el('button','bigbtn','🔗＋ New entry linked under this');
-    nb.addEventListener('click',()=>{
-      const n=createEntry();
-      addEdge(n.id,e.id,liveTypes().find(t=>t.name==='child').id);
-      openEditor(n.id); });
-    body.appendChild(nb);
 
     const del=el('button','dangerbtn','Delete entry');
     del.addEventListener('click',()=>{ if(confirm('Delete this entry? (soft delete; links detach)')){
@@ -1762,19 +1753,34 @@ function openTabEditor(tabId){
 // ==== SEC:APP/UI/EDIT_TAB (END) ====
 
 // ==== SEC:APP/UI/MENU (BEGIN) ====
-const Menu={ toggle(ev){ ev&&ev.stopPropagation();
-  const syncLbl={off:'Set up Drive sync…','need-auth':'Drive: sign in',
-    ok:'Sync now',error:'Sync now (retry)',syncing:'Syncing…'}[Sync.status]||'Drive sync';
-  $('#m-sync').textContent=syncLbl;
-  $('#m-syncoff').style.display=Sync.configured()?'block':'none';
-  $('#m-note').textContent=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
+// "⋯": sync, portability and reset actions live on their own tab. The
+// tab itself is synthetic (renderTabbar appends it after the data
+// tabs), so it exists on every device regardless of DB contents.
+function renderMenuTab(v){
+  const status=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
     +DB.entries.filter(e=>!e.deleted).length+' entries, '
     +liveEdges().length+' links, '+liveViews().length+' views. '
     +(Sync.configured()
       ?('Drive: '+Sync.status
         +(Sync.st.realm?(' · '+Sync.st.realm+' g'+(Sync.st.generation||0)):'')+'.')
       :'Drive: not set up.');
-  $('#menu').classList.toggle('on'); },
+  v.appendChild(el('div','f-created',status));
+  const btn=(label,fn,cls)=>{ const b=el('button','bigbtn'+(cls?' '+cls:''),label);
+    b.addEventListener('click',fn); v.appendChild(b); return b; };
+  const syncLbl={off:'Set up Drive sync…','need-auth':'Drive: sign in',
+    ok:'Sync now',error:'Sync now (retry)',syncing:'Syncing…'}[Sync.status]||'Drive sync';
+  btn(syncLbl,()=>{ if(!Sync.configured())Sync.setup();
+    else Sync.syncNow(true).then(()=>UI.rerender()); });
+  if(Sync.configured()) btn('Drive settings…',()=>Sync.setup());
+  btn('Sync diagnostics…',()=>Menu.diagnostics());
+  btn('Snapshots / restore…',()=>Menu.snapshots());
+  btn('Export NDJSON',()=>exportNDJSON());
+  btn('Import & merge…',()=>{ importMode='merge'; $('#importfile').click(); });
+  btn('Import & replace…',()=>{ importMode='replace'; $('#importfile').click(); });
+  btn('Wipe local data…',()=>Menu.wipeLocal(),'danger');
+  btn('New realm (reset all)…',()=>Sync.newRealm(),'danger');
+}
+const Menu={
   diagnostics(){
     const d=Sync.diagnostics();
     Modal.push((m,body)=>{
@@ -1860,19 +1866,7 @@ const Menu={ toggle(ev){ ev&&ev.stopPropagation();
     toast(Sync.configured()&&Sync.st.realm
       ?'Local data wiped — next sync restores the realm'
       :'Local data wiped'); } };
-document.addEventListener('click',ev=>{ if(!$('#menu').contains(ev.target))$('#menu').classList.remove('on'); });
-$('#m-sync').addEventListener('click',()=>{ $('#menu').classList.remove('on');
-  if(!Sync.configured()) Sync.setup(); else Sync.syncNow(true); });
-$('#m-syncoff').addEventListener('click',()=>{ $('#menu').classList.remove('on');
-  Sync.setup(); });
-$('#m-diag').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.diagnostics(); });
-$('#m-restore').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.snapshots(); });
-$('#m-export').addEventListener('click',()=>{exportNDJSON();$('#menu').classList.remove('on');});
 let importMode='merge';
-$('#m-import').addEventListener('click',()=>{importMode='merge';$('#importfile').click();$('#menu').classList.remove('on');});
-$('#m-replace').addEventListener('click',()=>{importMode='replace';$('#importfile').click();$('#menu').classList.remove('on');});
-$('#m-wipelocal').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Menu.wipeLocal(); });
-$('#m-newrealm').addEventListener('click',()=>{ $('#menu').classList.remove('on'); Sync.newRealm(); });
 $('#importfile').addEventListener('change',ev=>{
   const f=ev.target.files[0]; if(!f)return;
   const r=new FileReader(); r.onload=()=>importText(r.result,importMode); r.readAsText(f);
