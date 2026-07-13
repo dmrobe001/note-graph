@@ -73,20 +73,21 @@
            SEC:APP/UI/TREE         shared tree renderer
            SEC:APP/UI/CHIPS        shared chip builders
            SEC:APP/UI/TAB_CREATE   "+" capture tab
-           SEC:APP/UI/TAB_INTERVAL "🕓" interval pair tab
+           SEC:APP/UI/TAB_NOW      "❗" urgency capture tab
+           SEC:APP/UI/TAB_INTERVAL "🕓" interval tab (anchored)
            SEC:APP/UI/TAB_EXPLORE  "🧭" browse/edit tab
            SEC:APP/UI/TAB_EXCL     "☑" exclusive-swap tab
            SEC:APP/UI/TAB_VIEWS    "🔎" view config tab
            SEC:APP/UI/TAB_LINKS    "🔗" link-type config tab
            SEC:APP/UI/TAB_TABS     "🕮" tab config tab
            SEC:APP/UI/EDITOR       entry editor modal
-           SEC:APP/UI/PICK_ENTRY   entry picker (search+tree+add)
+           SEC:APP/UI/PICK_ENTRY   entry picker (search+chip cloud)
            SEC:APP/UI/PICK_VIEW    view picker
            SEC:APP/UI/PICK_TYPE    link-type picker
            SEC:APP/UI/PANEL_EXCL   exclusive swap panel
            SEC:APP/UI/EDIT_VIEW    view editor modal
            SEC:APP/UI/EDIT_TAB     tab config modal
-           SEC:APP/UI/MENU         the ⋯ tab: sync/export/resets
+           SEC:APP/UI/MENU         the ⋯ tab: editors, sync, resets
          SEC:APP/BOOT            init
      ==== SEC:HEADER (END) ========================================== -->
 <html lang="en">
@@ -126,8 +127,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/BASE (END) ==== */
 
 /* ==== SEC:STYLE/RUNBAR (BEGIN) ==== */
-#runbar{display:none;align-items:center;gap:8px;padding:9px 14px;
-  padding-top:calc(9px + env(safe-area-inset-top));overflow-x:auto;
+#runbar{display:none;align-items:center;gap:8px;padding:7px 12px;overflow-x:auto;
   background:linear-gradient(180deg,#182016,var(--bg));border-bottom:1px solid var(--accent-dim)}
 #runbar.on{display:flex}
 #runbar .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
@@ -136,6 +136,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 #runbar .rchip{display:inline-flex;gap:7px;align-items:center;white-space:nowrap;
   border:1px solid var(--accent-dim);border-radius:999px;padding:4px 11px;font-size:13px}
 #runbar .rchip .el{font-family:var(--mono);color:var(--accent);font-size:12px}
+#runbar .rchip.urgent{border-color:#7a3434;color:var(--danger)}
 /* ==== SEC:STYLE/RUNBAR (END) ==== */
 
 /* ==== SEC:STYLE/NAV (BEGIN) ==== */
@@ -150,7 +151,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/NAV (END) ==== */
 
 /* ==== SEC:STYLE/TREE (BEGIN) ==== */
-.trow{display:flex;align-items:center;gap:0;padding:0 2px;border-radius:10px;width:100%;text-align:left}
+.trow{display:flex;align-items:center;gap:2px;padding:0 2px;border-radius:10px;width:100%;text-align:left}
 .trow:active{background:var(--surface)}
 /* 44x44 touch targets (Apple HIG 44pt / WCAG 2.5.5) for the collapse,
    expand-all, and row-action buttons, with the glyphs filling the
@@ -159,7 +160,21 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
    depth always align, whatever the row's state. */
 .trow .chev{width:44px;height:44px;flex-shrink:0;display:flex;align-items:center;
   justify-content:center;color:var(--faint);font-size:24px;line-height:1}
-.trow .nm{flex:1;min-width:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Borders trace the exact touch targets in view lists: only real
+   buttons get one — the blank alignment spacers on leaf rows are not
+   targets and stay invisible. */
+.trow button.chev{border:1px solid var(--line);border-radius:10px}
+.trow .nm{flex:1;min-width:0;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  min-height:44px;padding:0 8px;border:1px solid var(--line);border-radius:10px;
+  display:flex;align-items:center}
+/* Dense mode (explore tab): 24px rows, single line, borders off. */
+.dense .trow{border-radius:6px}
+.dense .trow .chev{height:24px;width:40px;font-size:16px}
+.dense .trow button.chev{border:none;border-radius:6px}
+.dense .trow .nm{min-height:24px;padding:0 4px;border:none;font-size:14px}
+.dense .trow .tbtn{height:24px;width:36px;font-size:16px;border-radius:6px}
+.dense .flatrow{padding:1px 4px;border-radius:6px}
+.dense .flatrow .path{margin-bottom:0}
 .trow .nm.untitled{color:var(--muted)}
 .nm.tonly{font-weight:600}
 .trow .nm.hit{color:var(--accent)}
@@ -182,6 +197,10 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
   background:var(--surface2);border:1px solid var(--line);border-radius:999px;
   padding:4px 10px;font-size:13px;color:var(--ink);white-space:nowrap}
 .chip .nm{overflow:hidden;text-overflow:ellipsis}
+.chipcloud{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;padding:2px 0}
+.chipcloud .chip.untitled{color:var(--muted)}
+.chipcloud .chip.kid{border-style:dashed}          /* shown because its parent matched */
+.chipcloud .chip.new{color:var(--accent);border-color:var(--accent-dim)}
 .chip.linked{border-color:var(--accent-dim);background:#20261e}
 .chip.add{color:var(--muted);border-style:dashed}
 .chip.sel{border-color:var(--accent);background:#243020}
@@ -445,6 +464,35 @@ function createLinkType(name,locked=0){ const t0=nowISO();
   const t={id:newId('t'),name,locked,updated_at:t0,deleted:0};
   DB.linkTypes.push(t); DB.settings.dirty=true; save(); return t; }
 function getType(id){ return DB.linkTypes.find(t=>t.id===id&&!t.deleted); }
+// Hard-coded ANCHOR entries the workflow tabs are built around. Fixed
+// seed ids make them safe to materialize lazily on stores seeded
+// before an anchor existed: every device mints the identical record,
+// so the sync merge unions the copies into one. A tombstoned anchor is
+// undeleted (the tabs need it); a deliberately removed parent edge is
+// respected once the edge record exists.
+const ANCHORS={
+  status:    {id:'seed-e-status',    title:'Status'},
+  now:       {id:'seed-e-now',       title:'Now', parent:'status', edge:'seed-g-now-status'},
+  activities:{id:'seed-e-activities',title:'Activities'},
+  intervals: {id:'seed-e-intervals', title:'Intervals'} };
+function childTid(){ return getType('seed-t-child')?'seed-t-child'
+  :((liveTypes().find(t=>t.name==='child')||liveTypes()[0]||{}).id); }
+function endsTid(){ return getType('seed-t-ends')?'seed-t-ends'
+  :((liveTypes().find(t=>t.name==='ends')||liveTypes()[0]||{}).id); }
+function anchor(key){
+  const a=ANCHORS[key];
+  let e=DB.entries.find(x=>x.id===a.id);
+  if(!e){ const t=nowISO();
+    e={id:a.id,created_at:t,ts:t,updated_at:t,title:a.title,body:null,estimate_min:null,deleted:0};
+    DB.entries.push(e); DB.settings.dirty=true; save(); }
+  else if(e.deleted){ e.deleted=0; e.updated_at=nowISO(); DB.settings.dirty=true; save(); }
+  if(a.parent){
+    const p=anchor(a.parent);
+    if(!DB.edges.find(d=>d.id===a.edge)){ const t=nowISO();
+      DB.edges.push({id:a.edge,from_id:a.id,to_id:p.id,type_id:childTid(),
+        created_at:t,updated_at:t,deleted:0});
+      DB.settings.dirty=true; save(); } }
+  return e; }
 const liveTypes=()=>DB.linkTypes.filter(t=>!t.deleted);
 
 function createView(f){ const t0=nowISO();
@@ -498,22 +546,37 @@ function seed(){
   const dead=mkEntry('seed-e-dead','Dead');
   [active,someday,done,dead].forEach(s=>
     mkEdge('seed-g-'+s.id.slice('seed-e-'.length)+'-status',s,status,child));
-  const intervals=mkEntry('seed-e-intervals','Intervals');
+  const nowE=mkEntry('seed-e-now','Now');
+  mkEdge('seed-g-now-status',nowE,status,child);
+  mkEntry('seed-e-activities','Activities');
+  mkEntry('seed-e-intervals','Intervals');
   const all=mkView('seed-v-all',{name:'All',type_ids:[child.id,ends.id],locked:1});
   const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
   const vStat=mkView('seed-v-statuses',{name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
   DB.settings.allViewId=all.id;
   mkTab('seed-b-create','create','＋',{});
-  mkTab('seed-b-interval','interval','🕓',{root_id:intervals.id,link_type_id:child.id,end_type_id:ends.id});
+  mkTab('seed-b-now','now','❗',{});
+  mkTab('seed-b-interval','interval','🕓',{});
   mkTab('seed-b-explore','explore','🧭',{view_id:all.id});
   mkTab('seed-b-exclusive','exclusive','☑',{list_view_id:vAct.id,swap_view_id:vStat.id,link_type_id:child.id});
-  mkTab('seed-b-views','views','🔎',{});
-  mkTab('seed-b-links','links','🔗',{});
-  mkTab('seed-b-tabs','tabs','🕮',{});
   DB.settings.idsMigrated=true;   // fresh DBs are born with global ids
   DB.settings.dirty=false;
   saveNow({schedule:false});
 }
+// A workflow tab introduced after a store was first seeded
+// materializes lazily at boot, like the anchors: the fixed id means
+// concurrent devices mint the identical record and the merge unions
+// them. Unlike anchors, a TOMBSTONED tab row is respected — deleting a
+// tab is a real choice, so only a wholly absent record is created.
+function ensureSeedTabs(){
+  if(!DB.tabs.find(t=>t.id==='seed-b-now')){
+    const create=DB.tabs.find(t=>t.id==='seed-b-create'&&!t.deleted);
+    const base=create?create.pos:0;
+    const later=DB.tabs.filter(t=>!t.deleted&&t.pos>base).map(t=>t.pos);
+    const next=later.length?Math.min(...later):base+2;
+    DB.tabs.push({id:'seed-b-now',cls:'now',label:'❗',pos:(base+next)/2,
+      cfg:{},updated_at:nowISO(),deleted:0});
+    DB.settings.dirty=true; save(); } }
 // ==== SEC:APP/SEED (END) ====
 
 // ==== SEC:APP/MIGRATE (BEGIN) ====
@@ -631,10 +694,21 @@ function searchInView(q,view){
 // Running intervals for an interval tab: current containment-children
 // of its root. Ending one moves it out of the root; its start remains
 // queryable forever via the ends edge.
-function runningFor(tab){ const c=tab.cfg;
-  if(!c.root_id||!getEntry(c.root_id)) return [];
-  return childrenOf(c.root_id,[c.link_type_id])
+// Interval + urgency queries, hard-coded around the anchors.
+function runningIntervals(){
+  return childrenOf(anchor('intervals').id,[childTid()])
     .sort((a,b)=>a.ts.localeCompare(b.ts)); }
+function nowChildren(){
+  return childrenOf(anchor('now').id,[childTid()])
+    .sort((a,b)=>b.ts.localeCompare(a.ts)); }
+// An interval's face is the ACTIVITY it was started for: any parent
+// besides the Intervals anchor. Falls back to the entry's own text.
+function intervalActivity(e){
+  const rid=anchor('intervals').id, ct=childTid();
+  const d=liveEdges().find(x=>x.from_id===e.id&&x.type_id===ct
+    &&x.to_id!==rid&&getEntry(x.to_id));
+  return d?getEntry(d.to_id):null; }
+function intervalLabel(e){ const a=intervalActivity(e); return a?disp(a):disp(e); }
 function endEntryOf(startId,endTypeId){
   const d=liveEdges().find(x=>x.to_id===startId&&x.type_id===endTypeId);
   return d?getEntry(d.from_id):null; }
@@ -1089,21 +1163,22 @@ function tabState(id){ return UI.state[id]||(UI.state[id]={}); }
 UI.rerender=function(){
   renderRunbar(); renderTabbar();
   const v=$('#view'); v.innerHTML='';
+  const shown=liveTabs().filter(t=>!EDITOR_TAB_CLASSES.includes(t.cls));
   const tab=UI.tabId==='menu' ? {id:'menu',cls:'menu'}
-    : (getTab(UI.tabId)||liveTabs()[0]);
+    : ((getTab(UI.tabId)&&!EDITOR_TAB_CLASSES.includes(getTab(UI.tabId).cls))
+        ? getTab(UI.tabId) : shown[0]);
   if(!tab){return;}
   UI.tabId=tab.id;
-  ({create:renderCreate,interval:renderInterval,explore:renderExplore,
+  ({create:renderCreate,now:renderNow,interval:renderInterval,explore:renderExplore,
     exclusive:renderExclusive,views:renderViews,links:renderLinks,
     tabs:renderTabs,menu:renderMenuTab})[tab.cls](v,tab);
 };
+const EDITOR_TAB_CLASSES=['views','links','tabs'];   // live in the ⋯ tab now
 function renderTabbar(){
   const bar=$('#tabs'); bar.innerHTML='';
-  liveTabs().forEach(t=>{
+  liveTabs().filter(t=>!EDITOR_TAB_CLASSES.includes(t.cls)).forEach(t=>{
     const b=el('button',t.id===UI.tabId?'active':'');
-    b.appendChild(el('span','ico',t.label||'·'));
-    b.appendChild(el('span',null,{create:'new',interval:'clock',explore:'explore',
-      exclusive:'set',views:'views',links:'links',tabs:'tabs'}[t.cls]));
+    b.appendChild(el('span','ico',t.label||'·'));   // icon only, no text
     b.addEventListener('click',()=>{
       if(t.cls==='create') freshenDraft(t);   // arriving OR re-tapping starts a new entry
       UI.tabId=t.id; UI.rerender(); });
@@ -1112,26 +1187,31 @@ function renderTabbar(){
   // device regardless of DB contents, so sync/export is never lost.
   const mb=el('button',UI.tabId==='menu'?'active':'');
   mb.appendChild(el('span','ico','⋯'));
-  mb.appendChild(el('span',null,'menu'));
   mb.addEventListener('click',()=>{ UI.tabId='menu'; UI.rerender(); });
   bar.appendChild(mb);
 }
 // ==== SEC:APP/UI/ROOT (END) ====
 
 // ==== SEC:APP/UI/RUNBAR (BEGIN) ====
-// Slim live summary of every running interval across all interval tabs;
-// tapping a chip jumps to its tab. Ticks every 30s.
+// Slim live strip at the top: children of Now first, in red (tap to
+// edit/resolve), then every running interval in green, labelled by its
+// activity (tap to jump to the interval tab). Ticks every 30s.
 function renderRunbar(){
   const bar=$('#runbar');
   [...bar.querySelectorAll('.rchip')].forEach(x=>x.remove());
   let any=false;
-  liveTabs().filter(t=>t.cls==='interval').forEach(t=>{
-    runningFor(t).forEach(e=>{ any=true;
-      const c=el('button','rchip');
-      c.appendChild(el('span',null,disp(e)));
-      c.appendChild(el('span','el',fmtDur(Date.now()-new Date(e.ts))));
-      c.addEventListener('click',()=>{ UI.tabId=t.id; UI.rerender(); });
-      bar.appendChild(c); }); });
+  nowChildren().forEach(e=>{ any=true;
+    const c=el('button','rchip urgent');
+    c.appendChild(el('span',null,disp(e)));
+    c.addEventListener('click',()=>openEditor(e.id));
+    bar.appendChild(c); });
+  runningIntervals().forEach(e=>{ any=true;
+    const c=el('button','rchip');
+    c.appendChild(el('span',null,intervalLabel(e)));
+    c.appendChild(el('span','el',fmtDur(Date.now()-new Date(e.ts))));
+    c.addEventListener('click',()=>{ const t=liveTabs().find(x=>x.cls==='interval');
+      if(t){ UI.tabId=t.id; UI.rerender(); } });
+    bar.appendChild(c); });
   bar.classList.toggle('on',any);
 }
 setInterval(renderRunbar,30000);
@@ -1298,6 +1378,54 @@ function entryTopRow(e){
     openEditor(n.id); });
   top.appendChild(add);
   return top; }
+// Activity capture — the shared field+＋+chips control of the ❗ and 🕓
+// tabs. Chips are every descendant of the Activities anchor,
+// alphabetized. Typing filters: a chip survives if it or ANY of its
+// ancestors (within the Activities subtree) matches — typing "baby"
+// keeps "Nappy" when it lives under Baby. What ＋ and a chip tap DO is
+// the caller's business (opts.onPlus(text) / opts.onChip(entry)).
+function activityCapture(v,st,opts){
+  const row=el('div','f-toprow');
+  const f=el('input','f-title'); f.placeholder=opts.placeholder||'Activity…';
+  f.value=st.q||'';
+  f.addEventListener('input',()=>{ st.q=f.value; paint(); });
+  row.appendChild(f);
+  const plus=el('button','tbtn-add','＋'); plus.title='Create from the typed text';
+  plus.addEventListener('click',()=>{ const t=(st.q||'').trim(); if(!t)return; opts.onPlus(t); });
+  row.appendChild(plus);
+  v.appendChild(row);
+  const cloud=el('div','chipcloud'); v.appendChild(cloud);
+  function paint(){
+    cloud.innerHTML='';
+    const ct=childTid(), root=anchor('activities');
+    const desc=new Set(); const bfs=[root.id];
+    while(bfs.length){ const c=bfs.pop();
+      childrenOf(c,[ct]).forEach(k=>{
+        if(k.id!==root.id&&!desc.has(k.id)){ desc.add(k.id); bfs.push(k.id); } }); }
+    const q=(st.q||'').trim();
+    let ids=[...desc];
+    if(q){ const memo=new Map();
+      const ok=id=>{ if(memo.has(id)) return memo.get(id);
+        memo.set(id,false);                          // cycle guard
+        const e=getEntry(id); if(!e) return false;
+        let r=fuzzy(q,e.title?e.title:(e.body||''))>=0;
+        if(!r) r=matchedParents(id,desc,[ct]).some(p=>ok(p.id));
+        memo.set(id,r); return r; };
+      ids=ids.filter(ok); }
+    ids.map(getEntry).filter(Boolean)
+      .sort((a,b)=>disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}))
+      .forEach(e=>{ const c=el('button','chip'+(e.title?'':' untitled'),disp(e));
+        c.addEventListener('click',()=>opts.onChip(e));
+        cloud.appendChild(c); });
+    if(!ids.length) cloud.appendChild(el('div','empty',
+      q?'No matching activities.':'No activities yet — new ones grow under “Activities”.')); }
+  paint();
+  // Focus on arrival. On a cold page load browsers honor focus() but
+  // may refuse to raise the keyboard without a user gesture — that
+  // part is policy, not fixable from script. The retry catches renders
+  // where the field wasn't attached/layouted yet at call time.
+  f.setAttribute('autofocus','');
+  f.focus(); setTimeout(()=>{ if(document.activeElement!==f) f.focus(); },250); }
 // ==== SEC:APP/UI/CHIPS (END) ====
 
 // ==== SEC:APP/UI/TAB_CREATE (BEGIN) ====
@@ -1337,47 +1465,66 @@ function renderCreate(v,tab){
 }
 // ==== SEC:APP/UI/TAB_CREATE (END) ====
 
-// ==== SEC:APP/UI/TAB_INTERVAL (BEGIN) ====
-// "🕓": root picker at top; below, every current child of the root is a
-// running interval with an "end now" button. Ending creates the end
-// entry, links it (ends-type) to the start, and unlinks the start from
-// the root. ＋ starts a new interval and opens its editor.
-function renderInterval(v,tab){
-  const c=tab.cfg;
-  v.appendChild(el('div','f-lbl','Root'));
-  const root=c.root_id?getEntry(c.root_id):null;
-  const rf=el('button','f-field',root?disp(root):'root');
-  rf.addEventListener('click',()=>pickEntry('tab'+tab.id+'.root',e=>{
-    c.root_id=e.id; touch(tab); save(); UI.rerender(); }));
-  v.appendChild(rf);
-  if(!root){ v.appendChild(el('div','empty','Pick a root entry (e.g. “Intervals”). Its children are your running clocks.')); return; }
+// ==== SEC:APP/UI/TAB_NOW (BEGIN) ====
+// "❗": urgency capture. Nothing is created merely by opening the tab:
+// an urgent item exists only once ＋ is tapped (a titled child of the
+// Now anchor, from the field text) or an activity chip is tapped
+// (linking that ACTIVITY itself under Now). Children of Now show as
+// red chips in the runbar — tap one there to edit or resolve it.
+function renderNow(v,tab){
+  const st=tabState(tab.id);
+  activityCapture(v,st,{ placeholder:'What must not slip…',
+    onPlus:t=>{
+      const n=createEntry({title:t}); addEdge(n.id,anchor('now').id,childTid());
+      st.q=''; toast('Noted — see the red row'); UI.rerender(); },
+    onChip:a=>{
+      const nid=anchor('now').id, ct=childTid();
+      const already=liveEdges().some(d=>d.from_id===a.id&&d.to_id===nid&&d.type_id===ct);
+      if(!already) addEdge(a.id,nid,ct);
+      st.q=''; toast((already?'Already urgent: ':'Urgent: ')+disp(a)); UI.rerender(); } });
+}
+// ==== SEC:APP/UI/TAB_NOW (END) ====
 
+// ==== SEC:APP/UI/TAB_INTERVAL (BEGIN) ====
+// "🕓": hard-coded around the Intervals and Activities anchors — no
+// per-tab configuration. Every current child of Intervals is a running
+// interval, and its line (like its runbar bubble) wears the ACTIVITY
+// it was started for, not its timestamp. Starting: tap an activity
+// chip to begin an interval that is a child of both Intervals and that
+// activity; or type a fresh name and ＋ to mint a parentless activity
+// entry and start an interval under it. Ending creates the end entry,
+// links it (ends) to the start, and unlinks the start from Intervals.
+function renderInterval(v,tab){
+  const st=tabState(tab.id);
+  const ct=childTid(), et=endsTid(), rid=anchor('intervals').id;
   v.appendChild(el('div','f-lbl','Running'));
-  const running=runningFor(tab);
+  const running=runningIntervals();
   if(!running.length) v.appendChild(el('div','empty','Nothing running.'));
   running.forEach(e=>{
     const row=el('div','trow');
     row.appendChild(el('span','chev','▶'));
-    const nm=el('button','nm'+dispCls(e),disp(e)); nm.style.textAlign='left';
+    const a=intervalActivity(e);
+    const nm=el('button','nm'+dispCls(a||e),intervalLabel(e)); nm.style.textAlign='left';
     nm.addEventListener('click',()=>openEditor(e.id));
     row.appendChild(nm);
     row.appendChild(el('span','cnt',fmtDur(Date.now()-new Date(e.ts))));
     const end=el('button','tbtn end','end now');
     end.addEventListener('click',()=>{
       const endE=createEntry();
-      addEdge(endE.id,e.id,c.end_type_id);
-      const rootEdge=liveEdges().find(d=>d.from_id===e.id&&d.to_id===c.root_id&&d.type_id===c.link_type_id);
+      addEdge(endE.id,e.id,et);
+      const rootEdge=liveEdges().find(d=>d.from_id===e.id&&d.to_id===rid&&d.type_id===ct);
       if(rootEdge)removeEdge(rootEdge.id);
       toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
       UI.rerender(); });
     row.appendChild(end);
     v.appendChild(row); });
-
-  const nb=el('button','bigbtn go','＋ Start an interval');
-  nb.addEventListener('click',()=>{
-    const e=createEntry(); addEdge(e.id,c.root_id,c.link_type_id);
-    UI.rerender(); openEditor(e.id); });
-  v.appendChild(nb);
+  v.appendChild(el('div','f-lbl','Start'));
+  activityCapture(v,st,{ placeholder:'Start an activity…',
+    onChip:a=>{ const e=createEntry(); addEdge(e.id,rid,ct); addEdge(e.id,a.id,ct);
+      st.q=''; toast('Started · '+disp(a)); UI.rerender(); },
+    onPlus:t=>{ const a=createEntry({title:t});          // parentless activity
+      const e=createEntry(); addEdge(e.id,rid,ct); addEdge(e.id,a.id,ct);
+      st.q=''; toast('Started · '+t); UI.rerender(); } });
 }
 // ==== SEC:APP/UI/TAB_INTERVAL (END) ====
 
@@ -1402,7 +1549,7 @@ function renderExplore(v,tab){
   const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
   q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
   v.appendChild(q);
-  const box=el('div'); v.appendChild(box);
+  const box=el('div','dense'); v.appendChild(box);
 
   function redraw(){
     box.innerHTML='';
@@ -1500,34 +1647,34 @@ function renderLinks(v){
 // ==== SEC:APP/UI/TAB_LINKS (END) ====
 
 // ==== SEC:APP/UI/TAB_TABS (BEGIN) ====
-// "🕮": rename, reorder, duplicate (workflow tabs only), delete, and
-// open per-class configuration. Engine tabs are fixed.
+// Tabs manager (⋯ tab → Tabs): rename, reorder, duplicate, delete, and
+// open per-class configuration. Rows of the retired editor classes
+// (views/links/tabs) that may linger in older stores are hidden here
+// and in the tab bar alike — inert data.
 function renderTabs(v){
-  const engine=['views','links','tabs'];
-  liveTabs().forEach((t,i,arr)=>{
+  const rows=liveTabs().filter(t=>!EDITOR_TAB_CLASSES.includes(t.cls));
+  rows.forEach(t=>{
     const r=el('div','cfg-row');
     const lbl=el('input'); lbl.value=t.label; lbl.style.cssText='width:52px;text-align:center;padding:6px';
     lbl.addEventListener('change',()=>{t.label=lbl.value||'·';touch(t);save();renderTabbar();});
     r.appendChild(lbl);
     const nm=el('button','nm',t.cls); nm.style.textAlign='left';
-    if(!engine.includes(t.cls)) nm.addEventListener('click',()=>openTabEditor(t.id));
+    nm.addEventListener('click',()=>openTabEditor(t.id));
     r.appendChild(nm);
     const up=el('button','mini','↑');
-    up.addEventListener('click',()=>{ const vis=liveTabs(); const idx=vis.indexOf(t);
-      if(idx>0){ const p=vis[idx-1];
+    up.addEventListener('click',()=>{ const idx=rows.indexOf(t);
+      if(idx>0){ const p=rows[idx-1];
         const tmp=t.pos; t.pos=p.pos; p.pos=tmp;
         touch(t); touch(p); save(); UI.rerender(); } });
     r.appendChild(up);
-    if(!engine.includes(t.cls)){
-      const dup=el('button','mini','⧉'); dup.title='Duplicate';
-      dup.addEventListener('click',()=>{ createTab(t.cls,t.label,JSON.parse(JSON.stringify(t.cfg)));
-        toast('Duplicated — its field memories start fresh'); UI.rerender(); });
-      r.appendChild(dup);
-      const del=el('button','mini','✕');
-      del.addEventListener('click',()=>{ if(confirm('Delete this tab? (Data is untouched.)')){
-        t.deleted=1; touch(t); save(); if(UI.tabId===t.id)UI.tabId=liveTabs()[0].id; UI.rerender(); } });
-      r.appendChild(del);
-    }
+    const dup=el('button','mini','⧉'); dup.title='Duplicate';
+    dup.addEventListener('click',()=>{ createTab(t.cls,t.label,JSON.parse(JSON.stringify(t.cfg)));
+      toast('Duplicated — its field memories start fresh'); UI.rerender(); });
+    r.appendChild(dup);
+    const del=el('button','mini','✕');
+    del.addEventListener('click',()=>{ if(confirm('Delete this tab? (Data is untouched.)')){
+      t.deleted=1; touch(t); save(); if(UI.tabId===t.id)UI.tabId=liveTabs()[0].id; UI.rerender(); } });
+    r.appendChild(del);
     v.appendChild(r); });
 }
 // ==== SEC:APP/UI/TAB_TABS (END) ====
@@ -1565,12 +1712,18 @@ function openEditor(entryId){
 // ==== SEC:APP/UI/EDITOR (END) ====
 
 // ==== SEC:APP/UI/PICK_ENTRY (BEGIN) ====
-// The entry picker: search box + view chip up top, the shared tree
-// below. Tapping a name picks it; ＋ on a row creates the typed text as
-// that row's child (list refreshes, nothing is picked). The view chosen
-// here is remembered per fieldKey.
+// The entry picker: search box + view chip up top, a chip CLOUD below —
+// wrapped pills, alphabetized by display text so positions stay stable
+// as the vocabulary saturates. No hierarchy is drawn. Without a query,
+// every entry the view matches is a chip. With a query, search still
+// matches parents, but only the matches themselves and the matches'
+// children are shown — no ancestor rows; a chip present only because
+// its parent matched wears a dashed border. Typing something that
+// doesn't exist offers a leading ＋ chip that creates the title and
+// picks it at once. The view chosen here is remembered per fieldKey.
+const MAX_PICKER_CHIPS=250;
 function pickEntry(fieldKey,onPick){
-  const state={q:'',expand:new Set()};
+  const state={q:''};
   Modal.push((m,body)=>{
     const top=el('div','mtop');
     const q=el('input'); q.placeholder='Search or type a new title…';
@@ -1583,16 +1736,43 @@ function pickEntry(fieldKey,onPick){
 
     const vrow=el('div'); vrow.style.cssText='padding:0 0 8px';
     body.appendChild(vrow);
-    const box=el('div'); body.appendChild(box);
+    const box=el('div','chipcloud'); body.appendChild(box);
 
+    const pick=e=>{ onPick(e); Modal.pop(); };   // callback first: pop() re-renders the stack from data
     function draw(){
       vrow.innerHTML=''; box.innerHTML='';
       const view=Mem.get(fieldKey,DB.settings.allViewId);
       const vchip=el('button','chip','view: '+view.name);
       vchip.addEventListener('click',()=>pickView(vw=>{Mem.set(fieldKey,vw.id);draw();}));
       vrow.appendChild(vchip);
-      renderTree(box,{view,q:state.q,expand:state.expand,refresh:draw,
-        onPick:e=>{ Modal.pop(); onPick(e); }});
+
+      const typeIds=typeIdsOf(view), matched=viewMatches(view);
+      const qq=state.q.trim();
+      let ids, kidsOnly=new Set();
+      if(qq){
+        const hits=new Set();
+        matched.forEach(id=>{ const e=getEntry(id);
+          if(e&&fuzzy(qq,e.title?e.title:(e.body||''))>=0) hits.add(id); });
+        ids=new Set(hits);
+        hits.forEach(id=>matchedChildren(id,matched,typeIds).forEach(k=>{
+          if(!hits.has(k.id)){ ids.add(k.id); kidsOnly.add(k.id); } }));
+      } else ids=matched;
+
+      if(qq){                                  // create-and-pick, first in the cloud
+        const mk=el('button','chip new','＋ '+qq);
+        mk.addEventListener('click',()=>{ pick(createEntry({title:qq})); });
+        box.appendChild(mk);
+      }
+      const list=[...ids].map(getEntry).filter(Boolean)
+        .sort((a,b)=>disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}));
+      list.slice(0,MAX_PICKER_CHIPS).forEach(e=>{
+        const c=el('button','chip'+(kidsOnly.has(e.id)?' kid':'')+(e.title?'':' untitled'),disp(e));
+        c.addEventListener('click',()=>pick(e));
+        box.appendChild(c); });
+      if(list.length>MAX_PICKER_CHIPS)
+        box.appendChild(el('div','empty','+'+(list.length-MAX_PICKER_CHIPS)+' more — refine the search.'));
+      else if(!list.length&&!qq)
+        box.appendChild(el('div','empty','Nothing here yet.'));
     }
     draw();
     setTimeout(()=>q.focus(),60);
@@ -1617,7 +1797,7 @@ function pickView(onPick){
         const r=el('button','cfg-row');
         r.appendChild(el('span','nm',vw.name));
         r.appendChild(el('span','mt',n+' entries'));
-        r.addEventListener('click',()=>{Modal.pop();onPick(vw);});
+        r.addEventListener('click',()=>{onPick(vw);Modal.pop();});   // callback first: pop() re-renders the stack from data
         body.appendChild(r); });
     }
     draw();
@@ -1632,7 +1812,7 @@ function pickType(onPick){
     liveTypes().forEach(t=>{
       const r=el('button','cfg-row');
       r.appendChild(el('span','nm',t.name));
-      r.addEventListener('click',()=>{Modal.pop();onPick(t);});
+      r.addEventListener('click',()=>{onPick(t);Modal.pop();});   // callback first: pop() re-renders the stack from data
       body.appendChild(r); });
   });
 }
@@ -1789,11 +1969,6 @@ function openTabEditor(tabId){
         lr.appendChild(add); }
       drawDef();
     }
-    else if(t.cls==='interval'){
-      entryField('Root entry','root_id');
-      typeFieldCfg('Attach link type','link_type_id');
-      typeFieldCfg('End link type','end_type_id');
-    }
     else if(t.cls==='explore'){ viewFieldCfg('Default view','view_id'); }
     else if(t.cls==='exclusive'){
       viewFieldCfg('List view','list_view_id');
@@ -1809,6 +1984,16 @@ function openTabEditor(tabId){
 // tab itself is synthetic (renderTabbar appends it after the data
 // tabs), so it exists on every device regardless of DB contents.
 function renderMenuTab(v){
+  const st=tabState('menu');
+  if(st.page){                               // editor sub-pages
+    const back=el('button','bigbtn','← Back'); back.style.marginTop='0';
+    back.addEventListener('click',()=>{ st.page=null; UI.rerender(); });
+    v.appendChild(back);
+    if(st.page==='views') renderViews(v,{id:'menu.views'});
+    else if(st.page==='links') renderLinks(v);
+    else if(st.page==='tabs') renderTabs(v);
+    return;
+  }
   const status=(Store.memoryOnly?'Storage: MEMORY ONLY — export to keep data. ':'Storage: this browser. ')
     +DB.entries.filter(e=>!e.deleted).length+' entries, '
     +liveEdges().length+' links, '+liveViews().length+' views. '
@@ -1819,6 +2004,9 @@ function renderMenuTab(v){
   v.appendChild(el('div','f-created',status));
   const btn=(label,fn,cls)=>{ const b=el('button','bigbtn'+(cls?' '+cls:''),label);
     b.addEventListener('click',fn); v.appendChild(b); return b; };
+  btn('Views…',()=>{ st.page='views'; UI.rerender(); });
+  btn('Link types…',()=>{ st.page='links'; UI.rerender(); });
+  btn('Tabs…',()=>{ st.page='tabs'; UI.rerender(); });
   const syncLbl={off:'Set up Drive sync…','need-auth':'Drive: sign in',
     ok:'Sync now',error:'Sync now (retry)',syncing:'Syncing…'}[Sync.status]||'Drive sync';
   btn(syncLbl,()=>{ if(!Sync.configured())Sync.setup();
@@ -1933,6 +2121,7 @@ migrateIds();        // numeric -> device-prefixed global ids (one-shot)
 initCounters();      // per-device id counters, derived by scan
 seed();              // no-op unless the DB is empty
 migrateV1();         // one-shot import from the legacy store, if present
+ensureSeedTabs();    // workflow tabs newer than this store's first seed
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
 Sync.init();         // silent Drive sync attempt if configured

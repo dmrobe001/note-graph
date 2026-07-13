@@ -1,6 +1,6 @@
 # Articulate
 
-Version 3.0
+Version 3.1
 
 Articulate is a single-file, local-first web app for capturing atomic, timestamped
 notes and organizing them after the fact. It is built around one commitment: the
@@ -66,8 +66,28 @@ are soft (tombstones). Every record carries `updated_at` for merging.
   swap panel against a second view (seeded: "Statuses"). Choosing a member
   removes the entry's links to every member of that view and adds the chosen
   one — exactly-one membership, enforced by the gesture and self-healing.
-- **views / links / tabs** (🔎 🔗 🕮) — the engine's own configuration:
-  view editing, link-type management, and tab management.
+- **now** (❗) — urgency capture. Nothing is created merely by opening the
+  tab: ＋ creates a titled child of the `Now` anchor from the field text, and
+  tapping an activity chip marks that activity itself urgent by linking it
+  under `Now`. Children of `Now` appear as red chips in the runbar.
+
+The engine's own configuration — view editing, link-type management, and tab
+management — lives in the ⋯ tab (Views…, Link types…, Tabs…), not in the tab
+bar. Tab rows of the retired editor classes lingering in older stores are
+hidden everywhere and inert.
+
+The now and interval tabs are hard-coded around **anchor entries** with fixed
+seed ids — `Now` (under `Status`), `Activities`, and `Intervals` — rather
+than per-tab configuration. Anchors are materialized lazily if a store
+predates them: because the ids are fixed, every device mints the identical
+record and the merge unions the copies. Both tabs share the activity-capture
+control: a focused field, ＋, and a chip cloud of every descendant of
+`Activities`, filtered so a chip survives when it or any ancestor matches the
+typed text. On the interval tab, tapping a chip starts an interval that is a
+child of both `Intervals` and that activity — interval rows and runbar
+bubbles wear the activity's title; typing a new name and ＋ mints a
+parentless activity entry and starts an interval under it. Tab-bar buttons
+are icons only.
 - **⋯ (menu)** — synthetic, always last: Drive sync and settings,
   diagnostics, snapshots/restore, NDJSON export/import, and the two resets
   (wipe local, new realm).
@@ -198,6 +218,6 @@ the file. `grep -n "SEC:" articulate.html` prints the skeleton;
 
 ## Versioning
 
-Articulate uses a plain incremented version (this is 3.0), recorded here and
+Articulate uses a plain incremented version (this is 3.1), recorded here and
 in the `SEC:HEADER` manifest. Storage identifiers do not change with the
 version.
