@@ -193,9 +193,10 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/TREE (END) ==== */
 
 /* ==== SEC:STYLE/CHIPS (BEGIN) ==== */
-.chip{display:inline-flex;align-items:center;gap:6px;max-width:60vw;
+.chip{display:inline-flex;align-items:center;gap:6px;max-width:48%;
   background:var(--surface2);border:1px solid var(--line);border-radius:999px;
-  padding:4px 10px;font-size:13px;color:var(--ink);white-space:nowrap}
+  padding:4px 10px;font-size:13px;color:var(--ink);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
 .chip .nm{overflow:hidden;text-overflow:ellipsis}
 .chipcloud{display:flex;flex-wrap:wrap;gap:6px;align-content:flex-start;padding:2px 0}
 .chipcloud .chip.untitled{color:var(--muted)}
@@ -277,6 +278,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
   padding:8px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
 #toast.on{opacity:1}
 .empty{color:var(--faint);text-align:center;padding:40px 20px;font-size:14px}
+.empty.slim{padding:6px 4px}
 /* ==== SEC:STYLE/MISC (END) ==== */
 
 /* ==== SEC:STYLE (END) ============================================== */
@@ -331,6 +333,12 @@ function disp(e){ return e.title || (e.body||'').split('\n')[0].slice(0,60) || f
 // Row-name emphasis: title-only entries are bold; untitled entries
 // (body snippet or bare timestamp) are muted, plain roman, no bullet.
 function dispCls(e){ return e.title ? (e.body?'':' tonly') : ' untitled'; }
+// Chip-cloud order: seed entries first, then titled, then body-only,
+// then bare timestamps; alphabetical within each band.
+function chipRank(e){ if(String(e.id).startsWith('seed-')) return 0;
+  if(e.title) return 1; if(e.body) return 2; return 3; }
+function chipCmp(a,b){ return chipRank(a)-chipRank(b)
+  || disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}); }
 let toastTimer=null;
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),1700); }
@@ -472,8 +480,10 @@ function getType(id){ return DB.linkTypes.find(t=>t.id===id&&!t.deleted); }
 // respected once the edge record exists.
 const ANCHORS={
   status:    {id:'seed-e-status',    title:'Status'},
-  now:       {id:'seed-e-now',       title:'Now', parent:'status', edge:'seed-g-now-status'},
+  now:       {id:'seed-e-now',       title:'Now',    parent:'status', edge:'seed-g-now-status'},
+  active:    {id:'seed-e-active',    title:'Active', parent:'status', edge:'seed-g-active-status'},
   activities:{id:'seed-e-activities',title:'Activities'},
+  people:    {id:'seed-e-people',    title:'People'},
   intervals: {id:'seed-e-intervals', title:'Intervals'} };
 function childTid(){ return getType('seed-t-child')?'seed-t-child'
   :((liveTypes().find(t=>t.name==='child')||liveTypes()[0]||{}).id); }
@@ -549,6 +559,7 @@ function seed(){
   const nowE=mkEntry('seed-e-now','Now');
   mkEdge('seed-g-now-status',nowE,status,child);
   mkEntry('seed-e-activities','Activities');
+  mkEntry('seed-e-people','People');
   mkEntry('seed-e-intervals','Intervals');
   const all=mkView('seed-v-all',{name:'All',type_ids:[child.id,ends.id],locked:1});
   const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
@@ -1379,11 +1390,14 @@ function entryTopRow(e){
   top.appendChild(add);
   return top; }
 // Activity capture — the shared field+＋+chips control of the ❗ and 🕓
-// tabs. Chips are every descendant of the Activities anchor,
-// alphabetized. Typing filters: a chip survives if it or ANY of its
-// ancestors (within the Activities subtree) matches — typing "baby"
-// keeps "Nappy" when it lives under Baby. What ＋ and a chip tap DO is
-// the caller's business (opts.onPlus(text) / opts.onChip(entry)).
+// tabs. Chips come from opts.roots (anchor keys, default the
+// Activities subtree): all descendants, or direct children only with
+// opts.direct. Ordering per chipCmp (seed first, titled, body-only,
+// bare). Typing filters: a chip survives if it or ANY ancestor — up to
+// and including the root anchors themselves — matches, so typing
+// "people" keeps everyone under People, and "baby" keeps "Nappy" when
+// it lives under Baby. What ＋ and a chip tap DO is the caller's
+// business (opts.onPlus(text) / opts.onChip(entry)).
 function activityCapture(v,st,opts){
   const row=el('div','f-toprow');
   const f=el('input','f-title'); f.placeholder=opts.placeholder||'Activity…';
@@ -1397,28 +1411,36 @@ function activityCapture(v,st,opts){
   const cloud=el('div','chipcloud'); v.appendChild(cloud);
   function paint(){
     cloud.innerHTML='';
-    const ct=childTid(), root=anchor('activities');
-    const desc=new Set(); const bfs=[root.id];
-    while(bfs.length){ const c=bfs.pop();
-      childrenOf(c,[ct]).forEach(k=>{
-        if(k.id!==root.id&&!desc.has(k.id)){ desc.add(k.id); bfs.push(k.id); } }); }
+    const ct=childTid();
+    const rootIds=(opts.roots||['activities']).map(k=>anchor(k).id);
+    const chips=new Set();
+    if(opts.direct){
+      rootIds.forEach(r=>childrenOf(r,[ct]).forEach(k=>{
+        if(!rootIds.includes(k.id)) chips.add(k.id); }));
+    } else {
+      const bfs=[...rootIds];
+      while(bfs.length){ const c=bfs.pop();
+        childrenOf(c,[ct]).forEach(k=>{
+          if(!rootIds.includes(k.id)&&!chips.has(k.id)){ chips.add(k.id); bfs.push(k.id); } }); }
+    }
+    const pool=new Set([...chips,...rootIds]);       // ancestor-match pool includes the roots
     const q=(st.q||'').trim();
-    let ids=[...desc];
+    let ids=[...chips];
     if(q){ const memo=new Map();
       const ok=id=>{ if(memo.has(id)) return memo.get(id);
         memo.set(id,false);                          // cycle guard
         const e=getEntry(id); if(!e) return false;
         let r=fuzzy(q,e.title?e.title:(e.body||''))>=0;
-        if(!r) r=matchedParents(id,desc,[ct]).some(p=>ok(p.id));
+        if(!r) r=matchedParents(id,pool,[ct]).some(p=>ok(p.id));
         memo.set(id,r); return r; };
       ids=ids.filter(ok); }
     ids.map(getEntry).filter(Boolean)
-      .sort((a,b)=>disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}))
+      .sort(chipCmp)
       .forEach(e=>{ const c=el('button','chip'+(e.title?'':' untitled'),disp(e));
         c.addEventListener('click',()=>opts.onChip(e));
         cloud.appendChild(c); });
-    if(!ids.length) cloud.appendChild(el('div','empty',
-      q?'No matching activities.':'No activities yet — new ones grow under “Activities”.')); }
+    if(!ids.length) cloud.appendChild(el('div','empty slim',
+      q?'No matches.':(opts.emptyText||'Nothing to offer yet.'))); }
   paint();
   // Focus on arrival. On a cold page load browsers honor focus() but
   // may refuse to raise the keyboard without a user gesture — that
@@ -1497,9 +1519,8 @@ function renderNow(v,tab){
 function renderInterval(v,tab){
   const st=tabState(tab.id);
   const ct=childTid(), et=endsTid(), rid=anchor('intervals').id;
-  v.appendChild(el('div','f-lbl','Running'));
   const running=runningIntervals();
-  if(!running.length) v.appendChild(el('div','empty','Nothing running.'));
+  if(!running.length) v.appendChild(el('div','empty slim','Just Being'));
   running.forEach(e=>{
     const row=el('div','trow');
     row.appendChild(el('span','chev','▶'));
@@ -1518,8 +1539,8 @@ function renderInterval(v,tab){
       UI.rerender(); });
     row.appendChild(end);
     v.appendChild(row); });
-  v.appendChild(el('div','f-lbl','Start'));
   activityCapture(v,st,{ placeholder:'Start an activity…',
+    roots:['activities','people','active','now'], direct:true,
     onChip:a=>{ const e=createEntry(); addEdge(e.id,rid,ct); addEdge(e.id,a.id,ct);
       st.q=''; toast('Started · '+disp(a)); UI.rerender(); },
     onPlus:t=>{ const a=createEntry({title:t});          // parentless activity
@@ -1763,8 +1784,7 @@ function pickEntry(fieldKey,onPick){
         mk.addEventListener('click',()=>{ pick(createEntry({title:qq})); });
         box.appendChild(mk);
       }
-      const list=[...ids].map(getEntry).filter(Boolean)
-        .sort((a,b)=>disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}));
+      const list=[...ids].map(getEntry).filter(Boolean).sort(chipCmp);
       list.slice(0,MAX_PICKER_CHIPS).forEach(e=>{
         const c=el('button','chip'+(kidsOnly.has(e.id)?' kid':'')+(e.title?'':' untitled'),disp(e));
         c.addEventListener('click',()=>pick(e));
