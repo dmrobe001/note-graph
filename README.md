@@ -1,6 +1,6 @@
 # Articulate
 
-Version 3.1
+Version 3.2
 
 Articulate is a single-file, local-first web app for capturing atomic, timestamped
 notes and organizing them after the fact. It is built around one commitment: the
@@ -24,9 +24,12 @@ is an entry. There is no folder/file distinction: an entry acts as a "place"
 in the hierarchy simply by being titled and linked to.
 
 **Edges** are directed, typed links between entries (`from_id`, `to_id`,
-`type_id`). The two seeded **link types** are `child` (hierarchy; the edge
-points child → parent) and `ends` (the edge points an interval's end entry →
-its start entry). New link types can be created freely.
+`type_id`). The seeded **link types** are `child` (hierarchy; the edge
+points child → parent), `ends` (the edge points an interval's end entry →
+its start entry), and the interval-relation vocabulary `doing`, `with`,
+`from`, and `to` (each pointing an interval's start entry → the activity,
+a person, a place, and a place respectively). New link types can be
+created freely.
 
 **Views** are saved queries: a name, a list of condition entries (a matching
 entry must be a descendant of *all* of them — pure conjunction), and the set of
@@ -45,23 +48,48 @@ are soft (tombstones). Every record carries `updated_at` for merging.
 
 ## Tab classes
 
-- **create** (seeded ＋) — opens with a fresh committed entry: timestamp,
-  Title field, focused body, Links field. Links are added through the entry
-  picker; each chip shows its link type, tappable to change. Selecting the
-  tab — arriving from elsewhere or re-tapping it — commits the current entry
-  and starts another (an untouched draft is reused with a fresh timestamp
-  rather than left behind empty). Duplicated create tabs can
+- **create** (seeded ＋) — a draft form: timestamp, Title field, focused
+  body, Links field. Nothing exists in the store until the ＋ button in the
+  top row commits the draft; committing creates the entry (with the draft's
+  timestamp and its pending links) and clears the form back to the tab's
+  defaults. Links are added through the entry picker; each chip shows its
+  link type, tappable to change. Selecting the tab — arriving from elsewhere
+  or re-tapping it — resets an untouched draft's timestamp to now, while a
+  draft with content stays exactly as it was left. Drafts persist per tab in
+  a device-local localStorage key (`capturelog.draft`, never synced), so a
+  killed page doesn't eat keystrokes. Duplicated create tabs can
   carry default titles, bodies, and links, making them stencils for repeated
   entry shapes.
 - **interval** (seeded 🕓) — a root entry is chosen (seeded: "Intervals");
   its current children are running clocks, each with elapsed time and an
-  "end now" button. Ending creates a new entry, links it to the start with an
+  "end now" button. Starting an interval for an activity also adds a `doing`
+  edge from the start entry to the activity. Tapping a running row opens the
+  **interval sheet** rather than the raw entry editor: a "With" field whose
+  chip cloud is the children of `People`, and — when the interval's activity
+  is `Travel` or lives anywhere under it — "From" and "To" fields whose chip
+  clouds are the children of `Places`. Selections are `with`/`from`/`to`
+  edges from the start entry; With takes any number, From and To are
+  exactly-one, enforced by the gesture. Each cloud ends in a ＋ chip that
+  mints a new child of the anchor and selects it at once; the underlying
+  start and end entries stay one tap away at the bottom of the sheet.
+  Ending creates a new entry, links it to the start with an
   `ends` edge, and unlinks the start from the root. Because "running" is just
   parentage, intervals may overlap freely, and a clock started on one device
   can be ended on another.
 - **explore** (seeded 🧭) — a view field, search, and the entry tree (or a
-  flat list sorted by timestamp or creation date, with each entry's shortest
-  ancestor path shown). Tapping an entry opens the editor.
+  flat list sorted by timestamp, with each entry's shortest ancestor path
+  shown). In the flat list a **concluded interval reports as one row**: an
+  entry with exactly one incoming `ends` link is a *beginning*, its end
+  entry is dropped from the list, and the pair renders together as
+
+      8:30–8:47 Driving from home to school with Alice, Bob / cold / late
+
+  — start–end range, then the `doing` target's title (when that outgoing
+  link is exactly one), a "from"/"to" clause likewise (exactly one each),
+  a "with" clause gathering every `with` link, then the beginning entry's
+  title, body, the end entry's title, and body; the `:` and `/` separators
+  print only between two non-empty pieces. Tapping a combined row opens the
+  interval sheet; tapping any other entry opens the editor.
 - **exclusive** (seeded ☑) — a list view on top; tapping an entry opens a
   swap panel against a second view (seeded: "Statuses"). Choosing a member
   removes the entry's links to every member of that view and adds the chosen
@@ -76,9 +104,10 @@ management — lives in the ⋯ tab (Views…, Link types…, Tabs…), not in t
 bar. Tab rows of the retired editor classes lingering in older stores are
 hidden everywhere and inert.
 
-The now and interval tabs are hard-coded around **anchor entries** with fixed
-seed ids — `Now` (under `Status`), `Activities`, and `Intervals` — rather
-than per-tab configuration. Anchors are materialized lazily if a store
+The now and interval tabs and the interval sheet are hard-coded around
+**anchor entries** with fixed seed ids — `Now` (under `Status`),
+`Activities`, `Travel` (under `Activities`), `People`, `Places`, and
+`Intervals` — rather than per-tab configuration. Anchors are materialized lazily if a store
 predates them: because the ids are fixed, every device mints the identical
 record and the merge unions the copies. Both tabs share the activity-capture
 control: a focused field, ＋, and a chip cloud of every descendant of
@@ -99,16 +128,19 @@ own last-used view.
 
 ## Seed configuration
 
-On first run with an empty store, Articulate creates: link types `child` and
-`ends`; entries `Status` (with children `Active`, `Someday`, `Done`, `Dead`)
-and `Intervals`; views `All`, `Active`, and `Statuses` (`All` counts both
-`child` and `ends` links as containment); and the seven tabs above. Seed
-records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
+On first run with an empty store, Articulate creates: link types `child`,
+`ends`, `doing`, `with`, `from`, and `to`; entries `Status` (with children
+`Active`, `Someday`, `Done`, `Dead`), `Activities` (with child `Travel`),
+`People`, `Places`, and `Intervals`; views `All`, `Active`, and `Statuses`
+(`All` counts both `child` and `ends` links as containment); and the tabs
+above. Seed records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
 are identical on every device, so independently seeded stores contain
 literally the same records and merging them is a no-op — the seed can never
-duplicate. Everything seeded is ordinary data — retitle or reconfigure at
-will. The `All` view and the `child`/`ends` types are locked against deletion
-because pickers and merges fall back to them.
+duplicate. Stores seeded before a record existed materialize it lazily at
+boot, exactly as anchors do. Everything seeded is ordinary data — retitle or
+reconfigure at will. The `All` view and all six seeded types are locked
+against deletion: pickers and merges fall back to `child`/`ends`, and the
+interval sheet and explore's interval rows are hard-coded around the rest.
 
 ## Sync
 
@@ -203,7 +235,7 @@ imported automatically at boot if found) and migrates them on the way in.
 
 Wire-level identifiers are stable across releases and intentionally not
 renamed with the app: the localStorage keys `capturelog.v2`,
-`capturelog.device`, and `capturelog.sync`, the Drive filenames
+`capturelog.device`, `capturelog.sync`, and `capturelog.draft`, the Drive filenames
 `capturelog-realm.json`, `capturelog-sync-<realm>.ndjson`, and
 `capturelog-snapshot-….ndjson`, and the NDJSON record tags. Data outlives
 naming.
@@ -218,6 +250,6 @@ the file. `grep -n "SEC:" articulate.html` prints the skeleton;
 
 ## Versioning
 
-Articulate uses a plain incremented version (this is 3.1), recorded here and
+Articulate uses a plain incremented version (this is 3.2), recorded here and
 in the `SEC:HEADER` manifest. Storage identifiers do not change with the
 version.
