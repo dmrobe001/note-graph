@@ -625,6 +625,13 @@ function ensureSeedLinkTypes(){
         updated_at:nowISO(),deleted:0}); DB.settings.dirty=true; save(); }
     else if(t.deleted){ t.deleted=0; t.locked=1; t.updated_at=nowISO();
       DB.settings.dirty=true; save(); } }); }
+// Anchors materialize on first access, but access alone would leave a
+// record new to this release invisible until the first code path that
+// happens to need it (Places waited on a From/To field, which waited
+// on an activity under Travel, which waited on Places…). The boot
+// pass touches every anchor so stores seeded before one existed grow
+// it — and its parent edge — immediately.
+function ensureAnchors(){ Object.keys(ANCHORS).forEach(anchor); }
 // ==== SEC:APP/SEED (END) ====
 
 // ==== SEC:APP/MIGRATE (BEGIN) ====
@@ -2357,6 +2364,7 @@ seed();              // no-op unless the DB is empty
 migrateV1();         // one-shot import from the legacy store, if present
 ensureSeedTabs();    // workflow tabs newer than this store's first seed
 ensureSeedLinkTypes(); // doing/with/from/to on stores seeded before 3.2
+ensureAnchors();     // Places/Travel etc. on stores seeded before them
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
 Sync.init();         // silent Drive sync attempt if configured

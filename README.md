@@ -107,7 +107,7 @@ hidden everywhere and inert.
 The now and interval tabs and the interval sheet are hard-coded around
 **anchor entries** with fixed seed ids — `Now` (under `Status`),
 `Activities`, `Travel` (under `Activities`), `People`, `Places`, and
-`Intervals` — rather than per-tab configuration. Anchors are materialized lazily if a store
+`Intervals` — rather than per-tab configuration. Anchors are materialized at boot if a store
 predates them: because the ids are fixed, every device mints the identical
 record and the merge unions the copies. Both tabs share the activity-capture
 control: a focused field, ＋, and a chip cloud of every descendant of
