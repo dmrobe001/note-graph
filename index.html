@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- ================================================================
      ==== SEC:HEADER (BEGIN) ========================================
-     Articulate 3.4
+     Articulate 3.6
      Everything is an entry; relations are typed edges; "task",
      "status", and "interval" are conventions expressed as ordinary
      entries, views, and tabs. A first-run seed provides a default
@@ -47,7 +47,7 @@
        SEC:STYLE               all CSS
          SEC:STYLE/TOKENS        palette, type, radii
          SEC:STYLE/BASE          resets, shell, typography
-         SEC:STYLE/RUNBAR        running-intervals bar
+         SEC:STYLE/RUNBAR        active-intervals bar
          SEC:STYLE/NAV           scrollable bottom tab bar
          SEC:STYLE/TREE          shared entry tree rows
          SEC:STYLE/CHIPS         chips & badges
@@ -65,20 +65,20 @@
          SEC:APP/SEED            first-run seed (fixed 'seed-…' ids)
          SEC:APP/MIGRATE         legacy-store import (capturelog.v1)
          SEC:APP/QUERY           containment, view matching, trees,
-                                 search, running intervals
+                                 search, active intervals
          SEC:APP/EXPORT          NDJSON serialize/parse/export
          SEC:APP/MERGE           union + last-write-wins merge
          SEC:APP/SYNC            Google Drive sync: realm pointer,
                                  pull-merge-push, snapshots, resets
          SEC:APP/UI              view layer
            SEC:APP/UI/ROOT         tab bar, routing, rerender
-           SEC:APP/UI/RUNBAR       live running-interval summary
+           SEC:APP/UI/RUNBAR       live active-interval summary
            SEC:APP/UI/MODAL        modal stack infrastructure
            SEC:APP/UI/TREE         shared tree renderer
            SEC:APP/UI/CHIPS        shared chip builders
            SEC:APP/UI/TAB_CREATE   "+" capture tab
            SEC:APP/UI/TAB_NOW      "❗" urgency capture tab
-           SEC:APP/UI/TAB_INTERVAL "🕓" interval tab (anchored)
+           SEC:APP/UI/TAB_INTERVAL "🕓" active tab (status-linked)
            SEC:APP/UI/TAB_EXPLORE  "🧭" browse/edit tab
            SEC:APP/UI/TAB_EXCL     "☑" exclusive-swap tab
            SEC:APP/UI/TAB_VIEWS    "🔎" view config tab
@@ -158,13 +158,14 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 /* ==== SEC:STYLE/TREE (BEGIN) ==== */
 .trow{display:flex;align-items:center;gap:2px;padding:0 2px;border-radius:10px;width:100%;text-align:left}
 .trow:active{background:var(--surface)}
-/* 44x44 touch targets (Apple HIG 44pt / WCAG 2.5.5) for the collapse,
-   expand-all, and row-action buttons, with the glyphs filling the
-   target. Every row carries the same two-slot prefix (chevron slot +
-   expand-all slot) — blank spacers on leaf rows — so names at one
-   depth always align, whatever the row's state. */
-.trow .chev{width:44px;height:44px;flex-shrink:0;display:flex;align-items:center;
-  justify-content:center;color:var(--faint);font-size:24px;line-height:1}
+/* Row-action buttons keep 44x44 touch targets (Apple HIG 44pt / WCAG
+   2.5.5). The expand chevron is deliberately narrow — 24px wide, full
+   row height — matching the 24px-per-level indent so a level of
+   depth costs exactly one chevron-width. Every row carries the same
+   one-slot prefix (a blank spacer on leaf rows) so names at one depth
+   always align, whatever the row's state. */
+.trow .chev{width:24px;height:44px;flex-shrink:0;display:flex;align-items:center;
+  justify-content:center;color:var(--faint);font-size:20px;line-height:1}
 /* Borders trace the exact touch targets in view lists: only real
    buttons get one — the blank alignment spacers on leaf rows are not
    targets and stay invisible. */
@@ -174,7 +175,7 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
   display:flex;align-items:center}
 /* Dense mode (explore tab): 24px rows, single line, borders off. */
 .dense .trow{border-radius:6px}
-.dense .trow .chev{height:24px;width:40px;font-size:16px}
+.dense .trow .chev{height:24px;width:24px;font-size:16px}
 .dense .trow button.chev{border:none;border-radius:6px}
 .dense .trow .nm{min-height:24px;padding:0 4px;border:none;font-size:14px}
 .dense .trow .tbtn{height:24px;width:36px;font-size:16px;border-radius:6px}
@@ -488,8 +489,7 @@ const ANCHORS={
   activities:{id:'seed-e-activities',title:'Activities'},
   people:    {id:'seed-e-people',    title:'People'},
   places:    {id:'seed-e-places',    title:'Places'},
-  travel:    {id:'seed-e-travel',    title:'Travel', parent:'activities', edge:'seed-g-travel-activities'},
-  intervals: {id:'seed-e-intervals', title:'Intervals'} };
+  travel:    {id:'seed-e-travel',    title:'Travel', parent:'activities', edge:'seed-g-travel-activities'} };
 function childTid(){ return getType('seed-t-child')?'seed-t-child'
   :((liveTypes().find(t=>t.name==='child')||liveTypes()[0]||{}).id); }
 function endsTid(){ return getType('seed-t-ends')?'seed-t-ends'
@@ -504,6 +504,7 @@ function relTid(seedId,name){ if(getType(seedId)) return seedId;
 function doingTid(){ return relTid('seed-t-doing','doing'); }
 function withTid(){ return relTid('seed-t-with','with'); }
 function atTid(){ return relTid('seed-t-at','at'); }
+function statusTid(){ return relTid('seed-t-status','status'); }
 function anchor(key){
   const a=ANCHORS[key];
   let e=DB.entries.find(x=>x.id===a.id);
@@ -566,12 +567,12 @@ function seed(){
   const ends =mkType('seed-t-ends','ends');
   mkType('seed-t-doing','doing'); mkType('seed-t-with','with');
   mkType('seed-t-at','at');
+  mkType('seed-t-status','status'); mkType('seed-t-completed','completed');
   const status=mkEntry('seed-e-status','Status');
   const active=mkEntry('seed-e-active','Active');
   const someday=mkEntry('seed-e-someday','Someday');
-  const done=mkEntry('seed-e-done','Done');
   const dead=mkEntry('seed-e-dead','Dead');
-  [active,someday,done,dead].forEach(s=>
+  [active,someday,dead].forEach(s=>
     mkEdge('seed-g-'+s.id.slice('seed-e-'.length)+'-status',s,status,child));
   const nowE=mkEntry('seed-e-now','Now');
   mkEdge('seed-g-now-status',nowE,status,child);
@@ -580,7 +581,6 @@ function seed(){
   mkEntry('seed-e-places','Places');
   const travel=mkEntry('seed-e-travel','Travel');
   mkEdge('seed-g-travel-activities',travel,acts,child);
-  mkEntry('seed-e-intervals','Intervals');
   const all=mkView('seed-v-all',{name:'All',type_ids:[child.id,ends.id],locked:1});
   const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
   const vStat=mkView('seed-v-statuses',{name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
@@ -615,8 +615,9 @@ function ensureSeedTabs(){
 // hard-coded around them), and a tombstoned one is undeleted, exactly
 // as anchors are — the workflow needs it.
 const SEED_LINK_TYPES=[
-  {id:'seed-t-doing',name:'doing'}, {id:'seed-t-with',name:'with'},
-  {id:'seed-t-at',name:'at'}];
+  {id:'seed-t-doing',name:'doing'},   {id:'seed-t-with',name:'with'},
+  {id:'seed-t-at',name:'at'},         {id:'seed-t-status',name:'status'},
+  {id:'seed-t-completed',name:'completed'}];
 function ensureSeedLinkTypes(){
   SEED_LINK_TYPES.forEach(s=>{
     const t=DB.linkTypes.find(x=>x.id===s.id);
@@ -631,6 +632,45 @@ function ensureSeedLinkTypes(){
 // pass touches every anchor so stores seeded before one existed grow
 // it — and its parent edge — immediately.
 function ensureAnchors(){ Object.keys(ANCHORS).forEach(anchor); }
+// 3.5 drops Done from the seed (statuses and completion are moving to
+// the status/completed link types). Boot retirement: tombstone the
+// seeded Done entry and its edge to Status — but ONLY when nothing
+// else touches it: no other live edge in either direction, no view
+// condition, no create-tab default link. A Done with anything filed
+// under it is user data and stays put (it is unlocked ordinary data —
+// deletable by hand whenever its keeper is ready).
+function retireDoneSeed(){
+  const d=DB.entries.find(x=>x.id==='seed-e-done');
+  if(!d||d.deleted) return;
+  const touched=
+    liveEdges().some(g=>(g.to_id===d.id)||
+      (g.from_id===d.id&&g.id!=='seed-g-done-status'))
+    ||DB.views.some(v=>!v.deleted&&(v.cond_ids||[]).includes(d.id))
+    ||DB.tabs.some(t=>!t.deleted&&((t.cfg.def||{}).links||[])
+        .some(l=>l.to===d.id));
+  if(touched) return;
+  d.deleted=1; touch(d); save();
+  const g=DB.edges.find(x=>x.id==='seed-g-done-status');
+  if(g&&!g.deleted){ g.deleted=1; touch(g); save(); } }
+// 3.6 dissolves the Intervals containment root: activeness is now a
+// status link from the interval's start entry to the Active status
+// entry. Boot migration: every live child edge into the old Intervals
+// anchor becomes a status edge to Active (running intervals stay
+// running), then the Intervals entry retires exactly as Done does —
+// tombstoned only when nothing else touches it.
+function migrateIntervalsToActive(){
+  const iv=DB.entries.find(x=>x.id==='seed-e-intervals');
+  if(!iv||iv.deleted) return;
+  const ct=childTid(), st=statusTid(), aid=anchor('active').id;
+  liveEdges().forEach(g=>{
+    if(g.type_id===ct&&g.to_id===iv.id){
+      addEdge(g.from_id,aid,st);
+      g.deleted=1; touch(g); save(); } });
+  const touched=liveEdges().some(g=>g.to_id===iv.id||g.from_id===iv.id)
+    ||DB.views.some(v=>!v.deleted&&(v.cond_ids||[]).includes(iv.id))
+    ||DB.tabs.some(t=>!t.deleted&&((t.cfg.def||{}).links||[])
+        .some(l=>l.to===iv.id));
+  if(!touched){ iv.deleted=1; touch(iv); save(); } }
 // 3.2 briefly shipped from/to link types; 3.3 replaces the pair with
 // one 'at' type. Boot migration: a from-edge retypes to at in place
 // (same shape, start -> place); a to-edge moves to originate from the
@@ -672,6 +712,12 @@ function migrateV1(){
   const child=liveTypes().find(t=>t.name==='child'), ends=liveTypes().find(t=>t.name==='ends');
   const statusByName={}; ['Active','Someday','Done','Dead'].forEach(n=>{
     statusByName[n.toLowerCase()]=DB.entries.find(e=>!e.deleted&&e.title===n); });
+  // Done is no longer seeded; legacy done-tasks still deserve a home,
+  // so mint an ORDINARY (non-seed) Done under Status only when needed.
+  if(!statusByName.done&&old.entries.some(oe=>oe.is_task&&oe.task_state==='done')){
+    const d=createEntry({title:'Done'});
+    addEdge(d.id,'seed-e-status',child.id);
+    statusByName.done=d; }
   const idMap={};
   old.entries.forEach(oe=>{
     const ne=createEntry({title:oe.title||null,body:oe.body||null,
@@ -761,27 +807,30 @@ function searchInView(q,view){
       ||(inboundCount(b.e.id)-inboundCount(a.e.id))
       ||lastLinkedAt(b.e.id).localeCompare(lastLinkedAt(a.e.id))); }
 
-// Running intervals for an interval tab: current containment-children
-// of its root. Ending one moves it out of the root; its start remains
-// queryable forever via the ends edge.
 // Interval + urgency queries, hard-coded around the anchors.
-function runningIntervals(){
-  return childrenOf(anchor('intervals').id,[childTid()])
+// An interval is ACTIVE while its start entry carries a status link
+// to the Active status entry — there is no containment root. Actives
+// may already own an end entry (a planned destination), so "has an
+// end" no longer implies "concluded"; only the status edge decides.
+function activeIntervals(){
+  const st=statusTid(), aid=anchor('active').id, seen=new Set();
+  return liveEdges().filter(g=>g.type_id===st&&g.to_id===aid)
+    .map(g=>getEntry(g.from_id))
+    .filter(e=>e&&!seen.has(e.id)&&seen.add(e.id))
     .sort((a,b)=>a.ts.localeCompare(b.ts)); }
 function nowChildren(){
   return childrenOf(anchor('now').id,[childTid()])
     .sort((a,b)=>b.ts.localeCompare(a.ts)); }
 // An interval's face is the ACTIVITY it was started for: its doing
 // link when one exists (intervals started since 3.2 carry one), else
-// any child-parent besides the Intervals anchor (older intervals).
-// Falls back to the entry's own text via intervalLabel.
+// its first child-parent (older intervals). Falls back to the entry's
+// own text via intervalLabel.
 function intervalActivity(e){
   const dd=liveEdges().find(x=>x.from_id===e.id&&x.type_id===doingTid()
     &&getEntry(x.to_id));
   if(dd) return getEntry(dd.to_id);
-  const rid=anchor('intervals').id, ct=childTid();
-  const d=liveEdges().find(x=>x.from_id===e.id&&x.type_id===ct
-    &&x.to_id!==rid&&getEntry(x.to_id));
+  const d=liveEdges().find(x=>x.from_id===e.id&&x.type_id===childTid()
+    &&getEntry(x.to_id));
   return d?getEntry(d.to_id):null; }
 function intervalLabel(e){ const a=intervalActivity(e); return a?disp(a):disp(e); }
 function endEntryOf(startId,endTypeId){
@@ -1269,8 +1318,8 @@ function renderTabbar(){
 
 // ==== SEC:APP/UI/RUNBAR (BEGIN) ====
 // Slim live strip at the top: children of Now first, in red (tap to
-// edit/resolve), then every running interval in green, labelled by its
-// activity (tap to jump to the interval tab). Ticks every 30s.
+// edit/resolve), then every active interval in green, labelled by its
+// activity (tap to jump to the active tab). Ticks every 30s.
 function renderRunbar(){
   const bar=$('#runbar');
   [...bar.querySelectorAll('.rchip')].forEach(x=>x.remove());
@@ -1280,7 +1329,7 @@ function renderRunbar(){
     c.appendChild(el('span',null,disp(e)));
     c.addEventListener('click',()=>openEditor(e.id));
     bar.appendChild(c); });
-  runningIntervals().forEach(e=>{ any=true;
+  activeIntervals().forEach(e=>{ any=true;
     const c=el('button','rchip');
     c.appendChild(el('span',null,intervalLabel(e)));
     c.appendChild(el('span','el',fmtDur(Date.now()-new Date(e.ts))));
@@ -1344,21 +1393,14 @@ function renderTree(container,opts){
     seen.add(e.id);
     const kids=matchedChildren(e.id,include,typeIds);
     const open=q? true : opts.expand.has(e.id);   // search auto-expands
-    const row=el('div','trow'); row.style.paddingLeft=(2+depth*14)+'px';
+    const row=el('div','trow'); row.style.paddingLeft=(2+depth*24)+'px';
     if(kids.length){
       const chev=el('button','chev',open?'▾':'▸');
       chev.addEventListener('click',ev=>{ ev.stopPropagation();
         open?opts.expand.delete(e.id):opts.expand.add(e.id); opts.refresh(); });
       row.appendChild(chev);
-      const dd=el('button','chev','⇊'); dd.title='Expand all';
-      dd.addEventListener('click',ev=>{ ev.stopPropagation();
-        const st=[e.id]; while(st.length){ const c=st.pop(); opts.expand.add(c);
-          matchedChildren(c,include,typeIds).forEach(k=>st.push(k.id)); }
-        opts.refresh(); });
-      row.appendChild(dd);
     } else {
-      row.appendChild(el('span','chev'));   // blank slots: leaf names align
-      row.appendChild(el('span','chev'));   // with expandable ones
+      row.appendChild(el('span','chev'));   // blank slot: leaf names align
     }
     const nm=el('button','nm'+dispCls(e)+((hits&&hits.has(e.id))?' hit':''),disp(e));
     nm.style.textAlign='left';
@@ -1620,24 +1662,36 @@ function renderNow(v,tab){
 // ==== SEC:APP/UI/TAB_NOW (END) ====
 
 // ==== SEC:APP/UI/TAB_INTERVAL (BEGIN) ====
-// "🕓": hard-coded around the Intervals and Activities anchors — no
-// per-tab configuration. Every current child of Intervals is a running
-// interval, and its line (like its runbar bubble) wears the ACTIVITY
-// it was started for, not its timestamp. Starting: tap an activity
-// chip to begin an interval that is a child of both Intervals and that
-// activity AND carries a doing edge to the activity (the explore tab's
-// concluded-interval rows read the doing edge); or type a fresh name
-// and ＋ to mint a parentless activity entry and start an interval
-// under it. Tapping a running row opens the INTERVAL SHEET
+// "🕓" — the ACTIVE tab. An interval is active while its start entry
+// carries a status link to the Active status entry; there is no
+// containment root. Every active interval is a row with a running
+// clock, wearing the ACTIVITY it was started for. Starting: tap an
+// activity chip to begin an interval that is a child of the activity,
+// carries a doing edge to it (the explore tab's concluded-interval
+// rows read the doing edge), and is marked active by its status edge;
+// or type a fresh name and ＋ to mint a parentless activity entry and
+// start under it. Tapping a row opens the INTERVAL SHEET
 // (SEC:APP/UI/EDIT_INTERVAL) — with/from/to — not the raw entry
-// editor. Ending creates the end entry, links it (ends) to the start,
-// and unlinks the start from Intervals.
+// editor. An active interval MAY already own its end entry (selecting
+// a To place pre-creates it to hold the planned destination); "end
+// now" re-stamps that end entry to the present and deletes the status
+// link — concludeInterval, shared with nothing else yet but public to
+// the sheet if it ever grows an end control.
+function concludeInterval(e){
+  let en=endEntryOf(e.id,endsTid());
+  if(en) updateEntry(en.id,{ts:nowISO()});
+  else { en=createEntry(); addEdge(en.id,e.id,endsTid()); }
+  const st=statusTid(), aid=anchor('active').id;
+  liveEdges().forEach(g=>{
+    if(g.from_id===e.id&&g.type_id===st&&g.to_id===aid) removeEdge(g.id); });
+  toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
+  return en; }
 function renderInterval(v,tab){
   const st=tabState(tab.id);
-  const ct=childTid(), et=endsTid(), rid=anchor('intervals').id;
-  const running=runningIntervals();
-  if(!running.length) v.appendChild(el('div','empty slim','Just Being'));
-  running.forEach(e=>{
+  const ct=childTid();
+  const active=activeIntervals();
+  if(!active.length) v.appendChild(el('div','empty slim','Just Being'));
+  active.forEach(e=>{
     const row=el('div','trow');
     row.appendChild(el('span','chev','▶'));
     const a=intervalActivity(e);
@@ -1646,24 +1700,17 @@ function renderInterval(v,tab){
     row.appendChild(nm);
     row.appendChild(el('span','cnt',fmtDur(Date.now()-new Date(e.ts))));
     const end=el('button','tbtn end','end now');
-    end.addEventListener('click',()=>{
-      const endE=createEntry();
-      addEdge(endE.id,e.id,et);
-      const rootEdge=liveEdges().find(d=>d.from_id===e.id&&d.to_id===rid&&d.type_id===ct);
-      if(rootEdge)removeEdge(rootEdge.id);
-      toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
-      UI.rerender(); });
+    end.addEventListener('click',()=>{ concludeInterval(e); UI.rerender(); });
     row.appendChild(end);
     v.appendChild(row); });
+  const begin=a=>{ const e=createEntry();
+    addEdge(e.id,anchor('active').id,statusTid());
+    addEdge(e.id,a.id,ct); addEdge(e.id,a.id,doingTid()); };
   activityCapture(v,st,{ placeholder:'Start an activity…',
     roots:['activities','people','active','now'], direct:true,
-    onChip:a=>{ const e=createEntry(); addEdge(e.id,rid,ct); addEdge(e.id,a.id,ct);
-      addEdge(e.id,a.id,doingTid());
-      st.q=''; toast('Started · '+disp(a)); UI.rerender(); },
+    onChip:a=>{ begin(a); st.q=''; toast('Started · '+disp(a)); UI.rerender(); },
     onPlus:t=>{ const a=createEntry({title:t});          // parentless activity
-      const e=createEntry(); addEdge(e.id,rid,ct); addEdge(e.id,a.id,ct);
-      addEdge(e.id,a.id,doingTid());
-      st.q=''; toast('Started · '+t); UI.rerender(); } });
+      begin(a); st.q=''; toast('Started · '+t); UI.rerender(); } });
 }
 // ==== SEC:APP/UI/TAB_INTERVAL (END) ====
 
@@ -1680,7 +1727,7 @@ function viewField(container,fieldKey,fbId,onChange){
 
 function renderExplore(v,tab){
   const st=tabState(tab.id); st.expand=st.expand||new Set();
-  st.sort=st.sort==='ts'?'ts':'tree';
+  st.sort=st.sort==='tree'?'tree':'ts';        // time is the default
   const vrow=el('div','f-row'); vrow.style.flexWrap='nowrap';
   const view=viewField(vrow,'tab'+tab.id+'.view',tab.cfg.view_id,()=>UI.rerender());
   const sortBtn=el('button','sorttog',st.sort==='tree'?'tree':'by time');
@@ -1708,10 +1755,14 @@ function renderExplore(v,tab){
       // together, led by the start–end range —
       //   8:30–8:47 Driving from home to school with Alice, Bob
       //   : begin title / begin body / end title / end body
-      // doing shows when there is exactly one doing link AND its
-      // target is a direct child of Activities; from/to are the START
-      // and END entries' single at links; with gathers every with
-      // link. Every OTHER entry renders as
+      // — but an ACTIVE interval (status link to Active) is never a
+      // beginning even when it already owns a pre-created end entry:
+      // its provisional end timestamp would fake a range. It renders
+      // as an ordinary row until concluded. doing shows when there is
+      // exactly one doing link AND its target is a direct child of
+      // Activities; from/to are the START and END entries' single at
+      // links; with gathers every with link. Every OTHER entry
+      // renders as
       //   time parent: title with … at … / body
       //   / Children: titles, N untitled / Child of: titles, N untitled
       // — parent/children throughout mean DIRECT child-type edges
@@ -1719,13 +1770,16 @@ function renderExplore(v,tab){
       // the view's containment types): the parent prefix when exactly
       // one, the Child of clause when several. Throughout, ':' and
       // '/' print only between two non-empty pieces.
-      const et=endsTid();
+      const et=endsTid(), stt=statusTid(), aid=anchor('active').id;
       const endsIn={};                       // startId -> [end entries]
-      liveEdges().forEach(g=>{ if(g.type_id===et){ const ee=getEntry(g.from_id);
-        if(ee) (endsIn[g.to_id]=endsIn[g.to_id]||[]).push(ee); } });
+      const activeIds=new Set();
+      liveEdges().forEach(g=>{
+        if(g.type_id===et){ const ee=getEntry(g.from_id);
+          if(ee) (endsIn[g.to_id]=endsIn[g.to_id]||[]).push(ee); }
+        else if(g.type_id===stt&&g.to_id===aid) activeIds.add(g.from_id); });
       const beg=new Map();                   // beginningId -> its single end
       list.forEach(e=>{ const ee=endsIn[e.id];
-        if(ee&&ee.length===1) beg.set(e.id,ee[0]); });
+        if(ee&&ee.length===1&&!activeIds.has(e.id)) beg.set(e.id,ee[0]); });
       const consumed=new Set([...beg.values()].map(x=>x.id));
       list=list.filter(e=>beg.has(e.id)||!consumed.has(e.id));
       list.sort((a,b)=>b.ts.localeCompare(a.ts));
@@ -1921,12 +1975,13 @@ function openEditor(entryId){
 //   From / To — chips over the children of Places, exactly-one
 //   enforced by the gesture; both are at edges ("this moment happened
 //   at this place"): From sits on the START entry, To on the END
-//   entry. Selecting a To place on a still-running interval ENDS the
-//   interval then and there — arrival is the destination — creating
-//   the end entry, ends-linking it, unlinking the start from
-//   Intervals, and stamping the at edge. These two fields appear only
-//   when the interval's activity is a DIRECT child of Travel — one
-//   child edge straight to it, per the app-wide reading of "child".
+//   entry. Selecting a To place on an interval with no end entry yet
+//   PRE-CREATES one (ends-linked, timestamped provisionally) to carry
+//   the planned destination — the interval STAYS ACTIVE; only "end
+//   now" re-stamps that entry and clears the status link. These two
+//   fields appear only when the interval's activity is a DIRECT child
+//   of Travel — one child edge straight to it, per the app-wide
+//   reading of "child".
 // Each chip cloud ends in a ＋ new… chip that mints a titled child of
 // the anchor and selects it at once. The underlying start/end entries
 // (title, body, timestamp, delete) stay one tap away at the bottom.
@@ -1936,25 +1991,27 @@ function openIntervalEditor(startId){
     if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
     const endE=endEntryOf(e.id,endsTid());
     const act=intervalActivity(e);
+    const isActive=liveEdges().some(g=>g.from_id===e.id
+      &&g.type_id===statusTid()&&g.to_id===anchor('active').id);
 
     body.appendChild(el('div','f-lbl','Interval'));
     const nm=el('button',null,intervalLabel(e));
     nm.style.cssText='font-size:18px;font-weight:600;text-align:left;padding:2px 0';
     nm.addEventListener('click',()=>openEditor(e.id));
     body.appendChild(nm);
-    const when=el('div',null, endE
-      ? fmtDT(e.ts)+' – '+fmtDT(endE.ts)+' · '+fmtDur(new Date(endE.ts)-new Date(e.ts))
-      : 'running · '+fmtDur(Date.now()-new Date(e.ts))+' · since '+fmtDT(e.ts));
+    const when=el('div',null, isActive
+      ? 'active · '+fmtDur(Date.now()-new Date(e.ts))+' · since '+fmtDT(e.ts)
+      : endE
+        ? fmtDT(e.ts)+' – '+fmtDT(endE.ts)+' · '+fmtDur(new Date(endE.ts)-new Date(e.ts))
+        : fmtDT(e.ts));
     when.style.cssText='color:var(--muted);font-family:var(--mono);font-size:12px;margin-top:2px';
     body.appendChild(when);
 
-    // Ending, exactly as the 🕓 tab's "end now" does it.
-    const endInterval=()=>{
-      const ct=childTid(), rid=anchor('intervals').id;
+    // A To selection needs an end entry to hang its at link on; when
+    // none exists yet, pre-create it — provisionally timestamped, the
+    // interval stays active until "end now" re-stamps it.
+    const ensureEnd=()=>{
       const en=createEntry(); addEdge(en.id,e.id,endsTid());
-      const re=liveEdges().find(d=>d.from_id===e.id&&d.to_id===rid&&d.type_id===ct);
-      if(re) removeEdge(re.id);
-      toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
       UI.rerender(); return en; };
 
     // A relation field: chips over the direct children of an anchor;
@@ -1995,7 +2052,7 @@ function openIntervalEditor(startId){
         subject:()=>getEntry(e.id)});
       relField('To',atTid(),'places',{exclusive:true,
         subject:()=>endEntryOf(e.id,endsTid()),
-        ensureSubject:endInterval});
+        ensureSubject:ensureEnd});
     }
 
     body.appendChild(el('div','f-lbl','Entries'));
@@ -2421,6 +2478,8 @@ ensureSeedTabs();    // workflow tabs newer than this store's first seed
 ensureSeedLinkTypes(); // doing/with/at on stores seeded before them
 ensureAnchors();     // Places/Travel etc. on stores seeded before them
 migrateFromTo();     // 3.2's from/to edges & types -> at (one-shot)
+retireDoneSeed();    // 3.5 unseeds Done; tombstoned when untouched
+migrateIntervalsToActive(); // 3.6: child->Intervals becomes status->Active
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
 Sync.init();         // silent Drive sync attempt if configured
