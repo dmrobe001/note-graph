@@ -1,6 +1,6 @@
 # Articulate
 
-Version 3.1
+Version 3.4
 
 Articulate is a single-file, local-first web app for capturing atomic, timestamped
 notes and organizing them after the fact. It is built around one commitment: the
@@ -24,9 +24,23 @@ is an entry. There is no folder/file distinction: an entry acts as a "place"
 in the hierarchy simply by being titled and linked to.
 
 **Edges** are directed, typed links between entries (`from_id`, `to_id`,
-`type_id`). The two seeded **link types** are `child` (hierarchy; the edge
-points child → parent) and `ends` (the edge points an interval's end entry →
-its start entry). New link types can be created freely.
+`type_id`). The seeded **link types** are `child` (hierarchy; the edge
+points child → parent), `ends` (the edge points an interval's end entry →
+its start entry), and the relation vocabulary: `doing` (an interval's
+start entry → its activity), `with` (an entry → a person present), and
+`at` (an entry → the place that moment happened at). Location hangs on
+moments, so an interval's origin is its start entry's `at` link and its
+destination its end entry's — there are no separate from/to types. New
+link types can be created freely.
+
+Throughout the app, "a child of X" means exactly one thing: an entry with a
+live `child`-type edge pointing directly at X — never other link types,
+never grandchildren. The intended norm is that link types, not depth, put
+an entry in several categories at once: an entry keeps one organizing
+hierarchy for finding it, while flattened memberships (an activity filed
+under `Travel` that is *also* a direct child of `Activities`) decide which
+menus and clauses it appears in. Descendant traversals are reserved for
+view conditions, where they are explicit and chosen.
 
 **Views** are saved queries: a name, a list of condition entries (a matching
 entry must be a descendant of *all* of them — pure conjunction), and the set of
@@ -45,23 +59,58 @@ are soft (tombstones). Every record carries `updated_at` for merging.
 
 ## Tab classes
 
-- **create** (seeded ＋) — opens with a fresh committed entry: timestamp,
-  Title field, focused body, Links field. Links are added through the entry
-  picker; each chip shows its link type, tappable to change. Selecting the
-  tab — arriving from elsewhere or re-tapping it — commits the current entry
-  and starts another (an untouched draft is reused with a fresh timestamp
-  rather than left behind empty). Duplicated create tabs can
+- **create** (seeded ＋) — a draft form: timestamp, Title field, focused
+  body, Links field. Nothing exists in the store until the ＋ button in the
+  top row commits the draft; committing creates the entry (with the draft's
+  timestamp and its pending links) and clears the form back to the tab's
+  defaults. Links are added through the entry picker; each chip shows its
+  link type, tappable to change. Selecting the tab — arriving from elsewhere
+  or re-tapping it — resets an untouched draft's timestamp to now, while a
+  draft with content stays exactly as it was left. Drafts persist per tab in
+  a device-local localStorage key (`capturelog.draft`, never synced), so a
+  killed page doesn't eat keystrokes. Duplicated create tabs can
   carry default titles, bodies, and links, making them stencils for repeated
   entry shapes.
 - **interval** (seeded 🕓) — a root entry is chosen (seeded: "Intervals");
   its current children are running clocks, each with elapsed time and an
-  "end now" button. Ending creates a new entry, links it to the start with an
+  "end now" button. Starting an interval for an activity also adds a `doing`
+  edge from the start entry to the activity. Tapping a running row opens the
+  **interval sheet** rather than the raw entry editor: a "With" field whose
+  chip cloud is the children of `People` (any number of `with` edges from
+  the start entry), and — when the interval's activity is a direct child
+  of `Travel` — "From" and "To" fields whose chip clouds are the
+  children of `Places`. Both are `at` edges, exactly-one enforced by the
+  gesture: From sits on the start entry, To on the end entry. Selecting a
+  To place on a still-running interval **ends the interval then and there**
+  — arrival is the destination — creating the end entry and stamping its
+  `at` edge in one tap. Each cloud ends in a ＋ chip that
+  mints a new child of the anchor and selects it at once; the underlying
+  start and end entries stay one tap away at the bottom of the sheet.
+  Ending creates a new entry, links it to the start with an
   `ends` edge, and unlinks the start from the root. Because "running" is just
   parentage, intervals may overlap freely, and a clock started on one device
   can be ended on another.
 - **explore** (seeded 🧭) — a view field, search, and the entry tree (or a
-  flat list sorted by timestamp or creation date, with each entry's shortest
-  ancestor path shown). Tapping an entry opens the editor.
+  flat list sorted by timestamp). In the flat list **every entry is one
+  continuous line led by its time**. A concluded interval reports as one
+  row: an entry with exactly one incoming `ends` link is a *beginning*,
+  its end entry is dropped from the list, and the pair renders together as
+
+      8:30–8:47 Driving from home to school with Alice, Bob / cold / late
+
+  — start–end range, then the `doing` target's title (when there is
+  exactly one `doing` link *and* its target is a direct child of
+  `Activities`), "from" the start entry's single `at` place and
+  "to" the end entry's, a "with" clause gathering every `with` link, then
+  the beginning entry's title, body, the end entry's title, and body.
+  Every other entry renders as: time, its parent's name when it has
+  exactly one parent, its title, a "with" clause, an "at"
+  clause, its body, then `Children:` — the titles of its children plus a
+  count of the untitled ones — and, when it has several parents,
+  `Child of:` in the same style. Parent and children here are direct
+  `child` edges, regardless of the view's containment types. Throughout, the `:` and `/` separators
+  print only between two non-empty pieces. Tapping a combined row opens
+  the interval sheet; tapping any other entry opens the editor.
 - **exclusive** (seeded ☑) — a list view on top; tapping an entry opens a
   swap panel against a second view (seeded: "Statuses"). Choosing a member
   removes the entry's links to every member of that view and adds the chosen
@@ -76,14 +125,19 @@ management — lives in the ⋯ tab (Views…, Link types…, Tabs…), not in t
 bar. Tab rows of the retired editor classes lingering in older stores are
 hidden everywhere and inert.
 
-The now and interval tabs are hard-coded around **anchor entries** with fixed
-seed ids — `Now` (under `Status`), `Activities`, and `Intervals` — rather
-than per-tab configuration. Anchors are materialized lazily if a store
+The now and interval tabs and the interval sheet are hard-coded around
+**anchor entries** with fixed seed ids — `Now` (under `Status`),
+`Activities`, `Travel` (under `Activities`), `People`, `Places`, and
+`Intervals` — rather than per-tab configuration. Anchors are materialized at boot if a store
 predates them: because the ids are fixed, every device mints the identical
 record and the merge unions the copies. Both tabs share the activity-capture
-control: a focused field, ＋, and a chip cloud of every descendant of
-`Activities`, filtered so a chip survives when it or any ancestor matches the
-typed text. On the interval tab, tapping a chip starts an interval that is a
+control: a focused field, ＋, and a chip cloud — every descendant of
+`Activities` on the now tab; on the interval tab the direct children of
+`Activities`, `People`, `Active`, and `Now`, leaning on the flattening
+convention above (an activity must be a direct child of `Activities` to be
+startable, however deep it also sits under categories like `Travel`).
+Chips are filtered so one survives when it or any
+ancestor matches the typed text. On the interval tab, tapping a chip starts an interval that is a
 child of both `Intervals` and that activity — interval rows and runbar
 bubbles wear the activity's title; typing a new name and ＋ mints a
 parentless activity entry and starts an interval under it. Tab-bar buttons
@@ -99,16 +153,22 @@ own last-used view.
 
 ## Seed configuration
 
-On first run with an empty store, Articulate creates: link types `child` and
-`ends`; entries `Status` (with children `Active`, `Someday`, `Done`, `Dead`)
-and `Intervals`; views `All`, `Active`, and `Statuses` (`All` counts both
-`child` and `ends` links as containment); and the seven tabs above. Seed
-records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
+On first run with an empty store, Articulate creates: link types `child`,
+`ends`, `doing`, `with`, and `at`; entries `Status` (with children
+`Active`, `Someday`, `Done`, `Dead`), `Activities` (with child `Travel`),
+`People`, `Places`, and `Intervals`; views `All`, `Active`, and `Statuses`
+(`All` counts both `child` and `ends` links as containment); and the tabs
+above. Seed records carry fixed ids (`seed-e-status`, `seed-v-all`, …) that
 are identical on every device, so independently seeded stores contain
 literally the same records and merging them is a no-op — the seed can never
-duplicate. Everything seeded is ordinary data — retitle or reconfigure at
-will. The `All` view and the `child`/`ends` types are locked against deletion
-because pickers and merges fall back to them.
+duplicate. Stores seeded before a record existed materialize it lazily at
+boot, exactly as anchors do. (3.2 briefly seeded `from`/`to` types; a boot
+migration converts their edges to `at` — a from-edge retypes in place, a
+to-edge moves to the interval's end entry — and retires the pair.)
+Everything seeded is ordinary data — retitle or
+reconfigure at will. The `All` view and all five seeded types are locked
+against deletion: pickers and merges fall back to `child`/`ends`, and the
+interval sheet and explore's interval rows are hard-coded around the rest.
 
 ## Sync
 
@@ -203,7 +263,7 @@ imported automatically at boot if found) and migrates them on the way in.
 
 Wire-level identifiers are stable across releases and intentionally not
 renamed with the app: the localStorage keys `capturelog.v2`,
-`capturelog.device`, and `capturelog.sync`, the Drive filenames
+`capturelog.device`, `capturelog.sync`, and `capturelog.draft`, the Drive filenames
 `capturelog-realm.json`, `capturelog-sync-<realm>.ndjson`, and
 `capturelog-snapshot-….ndjson`, and the NDJSON record tags. Data outlives
 naming.
@@ -218,6 +278,6 @@ the file. `grep -n "SEC:" articulate.html` prints the skeleton;
 
 ## Versioning
 
-Articulate uses a plain incremented version (this is 3.1), recorded here and
+Articulate uses a plain incremented version (this is 3.4), recorded here and
 in the `SEC:HEADER` manifest. Storage identifiers do not change with the
 version.
