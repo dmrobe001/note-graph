@@ -1,7 +1,7 @@
 <!doctype html>
 <!-- ================================================================
      ==== SEC:HEADER (BEGIN) ========================================
-     Articulate 3.6
+     Articulate 4.0
      Everything is an entry; relations are typed edges; "task",
      "status", and "interval" are conventions expressed as ordinary
      entries, views, and tabs. A first-run seed provides a default
@@ -23,18 +23,18 @@
                   estimate_min, deleted
        edges      id, from_id, to_id, type_id, created_at,
                   updated_at, deleted
-                  (child edge points child -> parent; ends edge
-                   points end-entry -> start-entry; doing/with edges
-                   point interval-start -> activity / person; an at
-                   edge points an entry -> the place that moment
-                   happened at — an interval's origin/destination
-                   are its start/end entries' at links)
+                  (every semantic edge points OUTWARD from the
+                   sentence's subject: is a / part of / of /
+                   complements build the map; by, doing, object,
+                   recipient, beneficiary, complement, with, at,
+                   until, due, fulfills are the clauses of a moment;
+                   an interval's begin entry points until -> its end)
        linkTypes  id, name, locked, updated_at, deleted
        views      id, name, cond_ids[] (ancestor conditions, ANDed),
                   type_ids[] (containment link types), locked,
                   updated_at, deleted
        tabs       id, cls, label, pos, cfg{...}, updated_at
-                  cls ∈ create | interval | explore | exclusive |
+                  cls ∈ create | inbox | active | todo | explore |
                   views | links | tabs
        settings   allViewId, mem{fieldKey -> id}, migratedV1,
                   idsMigrated, dirty (false only while the DB holds
@@ -63,7 +63,6 @@
                                  legacy numeric ids to global ids
          SEC:APP/MODEL           CRUD for all five tables (+touch)
          SEC:APP/SEED            first-run seed (fixed 'seed-…' ids)
-         SEC:APP/MIGRATE         legacy-store import (capturelog.v1)
          SEC:APP/QUERY           containment, view matching, trees,
                                  search, active intervals
          SEC:APP/EXPORT          NDJSON serialize/parse/export
@@ -77,10 +76,10 @@
            SEC:APP/UI/TREE         shared tree renderer
            SEC:APP/UI/CHIPS        shared chip builders
            SEC:APP/UI/TAB_CREATE   "+" capture tab
-           SEC:APP/UI/TAB_NOW      "❗" urgency capture tab
-           SEC:APP/UI/TAB_INTERVAL "🕓" active tab (status-linked)
+           SEC:APP/UI/TAB_INBOX    "❗" Noted inbox tab
+           SEC:APP/UI/TAB_ACTIVE   "🕓" active intervals tab
            SEC:APP/UI/TAB_EXPLORE  "🧭" browse/edit tab
-           SEC:APP/UI/TAB_EXCL     "☑" exclusive-swap tab
+           SEC:APP/UI/TAB_TODO     "☑" ghosts (is -> To-Do)
            SEC:APP/UI/TAB_VIEWS    "🔎" view config tab
            SEC:APP/UI/TAB_LINKS    "🔗" link-type config tab
            SEC:APP/UI/TAB_TABS     "🕮" tab config tab
@@ -89,7 +88,7 @@
            SEC:APP/UI/PICK_ENTRY   entry picker (search+chip cloud)
            SEC:APP/UI/PICK_VIEW    view picker
            SEC:APP/UI/PICK_TYPE    link-type picker
-           SEC:APP/UI/PANEL_EXCL   exclusive swap panel
+           SEC:APP/UI/EDIT_TASK    task sheet (status/doing/due/promise)
            SEC:APP/UI/EDIT_VIEW    view editor modal
            SEC:APP/UI/EDIT_TAB     tab config modal
            SEC:APP/UI/MENU         the ⋯ tab: editors, sync, resets
@@ -430,8 +429,7 @@ function migrateIds(){
     v.type_ids=(v.type_ids||[]).map(x=>tm.get(x)??x); });
   DB.tabs.forEach((t,i)=>{ if(t.pos==null)t.pos=i+1; const c=t.cfg||{};
     if(c.root_id!=null)c.root_id=em.get(c.root_id)??c.root_id;
-    ['link_type_id','end_type_id'].forEach(k=>{ if(c[k]!=null)c[k]=tm.get(c[k])??c[k]; });
-    ['view_id','list_view_id','swap_view_id'].forEach(k=>{ if(c[k]!=null)c[k]=vm.get(c[k])??c[k]; });
+    ['view_id'].forEach(k=>{ if(c[k]!=null)c[k]=vm.get(c[k])??c[k]; });
     if(c.def&&c.def.links)c.def.links.forEach(l=>{ l.to=em.get(l.to)??l.to;
       l.type=tm.get(l.type)??l.type; }); });
   if(s.allViewId!=null) s.allViewId=vm.get(s.allViewId)??s.allViewId;
@@ -483,28 +481,40 @@ function getType(id){ return DB.linkTypes.find(t=>t.id===id&&!t.deleted); }
 // undeleted (the tabs need it); a deliberately removed parent edge is
 // respected once the edge record exists.
 const ANCHORS={
-  status:    {id:'seed-e-status',    title:'Status'},
-  now:       {id:'seed-e-now',       title:'Now',    parent:'status', edge:'seed-g-now-status'},
-  active:    {id:'seed-e-active',    title:'Active', parent:'status', edge:'seed-g-active-status'},
-  activities:{id:'seed-e-activities',title:'Activities'},
-  people:    {id:'seed-e-people',    title:'People'},
-  places:    {id:'seed-e-places',    title:'Places'},
-  travel:    {id:'seed-e-travel',    title:'Travel', parent:'activities', edge:'seed-g-travel-activities'} };
-function childTid(){ return getType('seed-t-child')?'seed-t-child'
-  :((liveTypes().find(t=>t.name==='child')||liveTypes()[0]||{}).id); }
-function endsTid(){ return getType('seed-t-ends')?'seed-t-ends'
-  :((liveTypes().find(t=>t.name==='ends')||liveTypes()[0]||{}).id); }
-// The relation vocabulary: doing (interval start -> activity), with
-// (entry -> person present), at (entry -> the place that moment
-// happened at; an interval's origin is its START entry's at link,
-// its destination its END entry's). Seed ids are guaranteed by
-// ensureSeedLinkTypes() at boot; name lookup is a courtesy fallback.
+  status:      {id:'seed-e-status',      title:'Status'},
+  activity:    {id:'seed-e-activity',    title:'Activity'},
+  person:      {id:'seed-e-person',      title:'Person'},
+  place:       {id:'seed-e-place',       title:'Place'},
+  personal:    {id:'seed-e-personal',    title:'Personal'},
+  professional:{id:'seed-e-professional',title:'Professional'},
+  i:           {id:'seed-e-i',           title:'I'},
+  active:      {id:'seed-e-active',      title:'Active',   parent:'status', edge:'seed-g-active-status'},
+  todo:        {id:'seed-e-todo',        title:'To-Do',    parent:'status', edge:'seed-g-todo-status'},
+  noted:       {id:'seed-e-noted',       title:'Noted',    parent:'status', edge:'seed-g-noted-status'},
+  deferred:    {id:'seed-e-deferred',    title:'Deferred', parent:'status', edge:'seed-g-deferred-status'},
+  cancelled:   {id:'seed-e-cancelled',   title:'Cancelled',parent:'status', edge:'seed-g-cancelled-status'},
+  missed:      {id:'seed-e-missed',      title:'Missed',   parent:'status', edge:'seed-g-missed-status'} };
+// Seed-id accessors for the sixteen types, with a name-lookup courtesy
+// fallback. ensureSeedLinkTypes() guarantees the seed ids at boot.
 function relTid(seedId,name){ if(getType(seedId)) return seedId;
   const t=liveTypes().find(x=>x.name===name); return t?t.id:seedId; }
+function isaTid(){ return relTid('seed-t-isa','is a'); }
+function partofTid(){ return relTid('seed-t-partof','part of'); }
+function ofTid(){ return relTid('seed-t-of','of'); }
+function isTid(){ return relTid('seed-t-is','is'); }
+function complementsTid(){ return relTid('seed-t-complements','complements'); }
+function byTid(){ return relTid('seed-t-by','by'); }
 function doingTid(){ return relTid('seed-t-doing','doing'); }
+function objectTid(){ return relTid('seed-t-object','object'); }
+function recipientTid(){ return relTid('seed-t-recipient','recipient'); }
+function beneficiaryTid(){ return relTid('seed-t-beneficiary','beneficiary'); }
+function complementTid(){ return relTid('seed-t-complement','complement'); }
 function withTid(){ return relTid('seed-t-with','with'); }
 function atTid(){ return relTid('seed-t-at','at'); }
-function statusTid(){ return relTid('seed-t-status','status'); }
+function untilTid(){ return relTid('seed-t-until','until'); }
+function dueTid(){ return relTid('seed-t-due','due'); }
+function fulfillsTid(){ return relTid('seed-t-fulfills','fulfills'); }
+function structTids(){ return [isaTid(),partofTid(),ofTid()]; }
 function anchor(key){
   const a=ANCHORS[key];
   let e=DB.entries.find(x=>x.id===a.id);
@@ -515,7 +525,7 @@ function anchor(key){
   if(a.parent){
     const p=anchor(a.parent);
     if(!DB.edges.find(d=>d.id===a.edge)){ const t=nowISO();
-      DB.edges.push({id:a.edge,from_id:a.id,to_id:p.id,type_id:childTid(),
+      DB.edges.push({id:a.edge,from_id:a.id,to_id:p.id,type_id:isaTid(),
         created_at:t,updated_at:t,deleted:0});
       DB.settings.dirty=true; save(); } }
   return e; }
@@ -563,33 +573,34 @@ function seed(){
   let pos=0;
   const mkTab=(id,cls,label,cfg)=>DB.tabs.push({id,cls,label,pos:++pos,cfg,
     updated_at:t0,deleted:0});
-  const child=mkType('seed-t-child','child');
-  const ends =mkType('seed-t-ends','ends');
-  mkType('seed-t-doing','doing'); mkType('seed-t-with','with');
-  mkType('seed-t-at','at');
-  mkType('seed-t-status','status'); mkType('seed-t-completed','completed');
+  const isa=mkType('seed-t-isa','is a');
+  mkType('seed-t-partof','part of');   mkType('seed-t-of','of');
+  mkType('seed-t-is','is');            mkType('seed-t-complements','complements');
+  mkType('seed-t-by','by');            mkType('seed-t-doing','doing');
+  mkType('seed-t-object','object');    mkType('seed-t-recipient','recipient');
+  mkType('seed-t-beneficiary','beneficiary'); mkType('seed-t-complement','complement');
+  mkType('seed-t-with','with');        mkType('seed-t-at','at');
+  mkType('seed-t-until','until');      mkType('seed-t-due','due');
+  mkType('seed-t-fulfills','fulfills');
   const status=mkEntry('seed-e-status','Status');
-  const active=mkEntry('seed-e-active','Active');
-  const someday=mkEntry('seed-e-someday','Someday');
-  const dead=mkEntry('seed-e-dead','Dead');
-  [active,someday,dead].forEach(s=>
-    mkEdge('seed-g-'+s.id.slice('seed-e-'.length)+'-status',s,status,child));
-  const nowE=mkEntry('seed-e-now','Now');
-  mkEdge('seed-g-now-status',nowE,status,child);
-  const acts=mkEntry('seed-e-activities','Activities');
-  mkEntry('seed-e-people','People');
-  mkEntry('seed-e-places','Places');
-  const travel=mkEntry('seed-e-travel','Travel');
-  mkEdge('seed-g-travel-activities',travel,acts,child);
-  const all=mkView('seed-v-all',{name:'All',type_ids:[child.id,ends.id],locked:1});
-  const vAct=mkView('seed-v-active',{name:'Active',cond_ids:[active.id],type_ids:[child.id]});
-  const vStat=mkView('seed-v-statuses',{name:'Statuses',cond_ids:[status.id],type_ids:[child.id]});
+  mkEntry('seed-e-activity','Activity');
+  mkEntry('seed-e-person','Person');
+  mkEntry('seed-e-place','Place');
+  mkEntry('seed-e-personal','Personal');
+  mkEntry('seed-e-professional','Professional');
+  mkEntry('seed-e-i','I');
+  [['active','Active'],['todo','To-Do'],['noted','Noted'],
+   ['deferred','Deferred'],['cancelled','Cancelled'],['missed','Missed']]
+    .forEach(([k,t])=>{ const s=mkEntry('seed-e-'+k,t);
+      mkEdge('seed-g-'+k+'-status',s,status,isa); });
+  const all=mkView('seed-v-all',{name:'All',
+    type_ids:['seed-t-isa','seed-t-partof','seed-t-of'],locked:1});
   DB.settings.allViewId=all.id;
   mkTab('seed-b-create','create','＋',{});
-  mkTab('seed-b-now','now','❗',{});
-  mkTab('seed-b-interval','interval','🕓',{});
+  mkTab('seed-b-inbox','inbox','❗',{});
+  mkTab('seed-b-active','active','🕓',{});
+  mkTab('seed-b-todo','todo','☑',{});
   mkTab('seed-b-explore','explore','🧭',{view_id:all.id});
-  mkTab('seed-b-exclusive','exclusive','☑',{list_view_id:vAct.id,swap_view_id:vStat.id,link_type_id:child.id});
   DB.settings.idsMigrated=true;   // fresh DBs are born with global ids
   DB.settings.dirty=false;
   saveNow({schedule:false});
@@ -599,15 +610,33 @@ function seed(){
 // concurrent devices mint the identical record and the merge unions
 // them. Unlike anchors, a TOMBSTONED tab row is respected — deleting a
 // tab is a real choice, so only a wholly absent record is created.
+// The five 4.0 workflow tabs, by fixed id. On a store first seeded by
+// an EARLIER version, seed() no-ops (the store isn't empty), so these
+// would never appear and the bar would still hold that version's tabs.
+// This boot pass reconciles the bar to the running code: it mints any
+// missing 4.0 tab (fixed ids -> concurrent devices mint identical
+// records, merge-safe) and RETIRES any live tab whose class this build
+// can't render (vestigial 'now' / 'interval' / 'exclusive'). Tabs are
+// UI configuration, not journal data, so reconciling them is safe and
+// not a data migration — entries, edges, and links are left untouched.
+const RENDERABLE_TAB_CLASSES=['create','inbox','active','todo','explore','views','links','tabs'];
+const SEED_TABS=[
+  {id:'seed-b-create', cls:'create', label:'\uFF0B'},
+  {id:'seed-b-inbox',  cls:'inbox',  label:'\u2757'},
+  {id:'seed-b-active', cls:'active', label:'\uD83D\uDD53'},
+  {id:'seed-b-todo',   cls:'todo',   label:'\u2611'},
+  {id:'seed-b-explore',cls:'explore',label:'\uD83E\uDDED'}];
 function ensureSeedTabs(){
-  if(!DB.tabs.find(t=>t.id==='seed-b-now')){
-    const create=DB.tabs.find(t=>t.id==='seed-b-create'&&!t.deleted);
-    const base=create?create.pos:0;
-    const later=DB.tabs.filter(t=>!t.deleted&&t.pos>base).map(t=>t.pos);
-    const next=later.length?Math.min(...later):base+2;
-    DB.tabs.push({id:'seed-b-now',cls:'now',label:'❗',pos:(base+next)/2,
-      cfg:{},updated_at:nowISO(),deleted:0});
-    DB.settings.dirty=true; save(); } }
+  let changed=false;
+  SEED_TABS.forEach((s,i)=>{
+    const t=DB.tabs.find(x=>x.id===s.id);
+    if(!t){ DB.tabs.push({id:s.id,cls:s.cls,label:s.label,pos:i+1,
+        cfg:s.cls==='explore'?{view_id:DB.settings.allViewId}:{},
+        updated_at:nowISO(),deleted:0}); changed=true; }
+    else if(t.deleted){ t.deleted=0; t.updated_at=nowISO(); changed=true; } });
+  DB.tabs.forEach(t=>{ if(!t.deleted&&!RENDERABLE_TAB_CLASSES.includes(t.cls)){
+    t.deleted=1; t.updated_at=nowISO(); changed=true; } });
+  if(changed){ DB.settings.dirty=true; save(); } }
 // Link types introduced after a store was first seeded materialize
 // lazily at boot, like the anchors: the fixed ids mean concurrent
 // devices mint identical records and the merge unions them. They are
@@ -615,9 +644,14 @@ function ensureSeedTabs(){
 // hard-coded around them), and a tombstoned one is undeleted, exactly
 // as anchors are — the workflow needs it.
 const SEED_LINK_TYPES=[
-  {id:'seed-t-doing',name:'doing'},   {id:'seed-t-with',name:'with'},
-  {id:'seed-t-at',name:'at'},         {id:'seed-t-status',name:'status'},
-  {id:'seed-t-completed',name:'completed'}];
+  {id:'seed-t-isa',name:'is a'},{id:'seed-t-partof',name:'part of'},
+  {id:'seed-t-of',name:'of'},{id:'seed-t-is',name:'is'},
+  {id:'seed-t-complements',name:'complements'},{id:'seed-t-by',name:'by'},
+  {id:'seed-t-doing',name:'doing'},{id:'seed-t-object',name:'object'},
+  {id:'seed-t-recipient',name:'recipient'},{id:'seed-t-beneficiary',name:'beneficiary'},
+  {id:'seed-t-complement',name:'complement'},{id:'seed-t-with',name:'with'},
+  {id:'seed-t-at',name:'at'},{id:'seed-t-until',name:'until'},
+  {id:'seed-t-due',name:'due'},{id:'seed-t-fulfills',name:'fulfills'}];
 function ensureSeedLinkTypes(){
   SEED_LINK_TYPES.forEach(s=>{
     const t=DB.linkTypes.find(x=>x.id===s.id);
@@ -632,115 +666,13 @@ function ensureSeedLinkTypes(){
 // pass touches every anchor so stores seeded before one existed grow
 // it — and its parent edge — immediately.
 function ensureAnchors(){ Object.keys(ANCHORS).forEach(anchor); }
-// 3.5 drops Done from the seed (statuses and completion are moving to
-// the status/completed link types). Boot retirement: tombstone the
-// seeded Done entry and its edge to Status — but ONLY when nothing
-// else touches it: no other live edge in either direction, no view
-// condition, no create-tab default link. A Done with anything filed
-// under it is user data and stays put (it is unlocked ordinary data —
-// deletable by hand whenever its keeper is ready).
-function retireDoneSeed(){
-  const d=DB.entries.find(x=>x.id==='seed-e-done');
-  if(!d||d.deleted) return;
-  const touched=
-    liveEdges().some(g=>(g.to_id===d.id)||
-      (g.from_id===d.id&&g.id!=='seed-g-done-status'))
-    ||DB.views.some(v=>!v.deleted&&(v.cond_ids||[]).includes(d.id))
-    ||DB.tabs.some(t=>!t.deleted&&((t.cfg.def||{}).links||[])
-        .some(l=>l.to===d.id));
-  if(touched) return;
-  d.deleted=1; touch(d); save();
-  const g=DB.edges.find(x=>x.id==='seed-g-done-status');
-  if(g&&!g.deleted){ g.deleted=1; touch(g); save(); } }
-// 3.6 dissolves the Intervals containment root: activeness is now a
-// status link from the interval's start entry to the Active status
-// entry. Boot migration: every live child edge into the old Intervals
-// anchor becomes a status edge to Active (running intervals stay
-// running), then the Intervals entry retires exactly as Done does —
-// tombstoned only when nothing else touches it.
-function migrateIntervalsToActive(){
-  const iv=DB.entries.find(x=>x.id==='seed-e-intervals');
-  if(!iv||iv.deleted) return;
-  const ct=childTid(), st=statusTid(), aid=anchor('active').id;
-  liveEdges().forEach(g=>{
-    if(g.type_id===ct&&g.to_id===iv.id){
-      addEdge(g.from_id,aid,st);
-      g.deleted=1; touch(g); save(); } });
-  const touched=liveEdges().some(g=>g.to_id===iv.id||g.from_id===iv.id)
-    ||DB.views.some(v=>!v.deleted&&(v.cond_ids||[]).includes(iv.id))
-    ||DB.tabs.some(t=>!t.deleted&&((t.cfg.def||{}).links||[])
-        .some(l=>l.to===iv.id));
-  if(!touched){ iv.deleted=1; touch(iv); save(); } }
-// 3.2 briefly shipped from/to link types; 3.3 replaces the pair with
-// one 'at' type. Boot migration: a from-edge retypes to at in place
-// (same shape, start -> place); a to-edge moves to originate from the
-// interval's end entry when one exists (else it too retypes in
-// place); the retired types then tombstone once nothing uses them.
-// Idempotent — after the first pass both types are dead and it
-// no-ops, so repeated boots cause no sync churn.
-function migrateFromTo(){
-  const at=atTid(), et=endsTid();
-  DB.edges.forEach(g=>{ if(g.deleted) return;
-    if(g.type_id==='seed-t-from'){ g.type_id=at; touch(g); save(); }
-    else if(g.type_id==='seed-t-to'){
-      const en=endEntryOf(g.from_id,et);
-      if(en){ addEdge(en.id,g.to_id,at); g.deleted=1; touch(g); save(); }
-      else { g.type_id=at; touch(g); save(); } } });
-  ['seed-t-from','seed-t-to'].forEach(id=>{
-    const t=DB.linkTypes.find(x=>x.id===id);
-    if(!t||t.deleted) return;
-    if(!liveEdges().some(d=>d.type_id===id)){
-      t.deleted=1; t.locked=0; t.updated_at=nowISO();
-      DB.settings.dirty=true; save(); }
-    else if(t.locked){ t.locked=0; t.updated_at=nowISO();
-      DB.settings.dirty=true; save(); } }); }
 // ==== SEC:APP/SEED (END) ====
-
-// ==== SEC:APP/MIGRATE (BEGIN) ====
-// One-shot import from the legacy store (localStorage key
-// capturelog.v1), run after seed so keystone entries exist. Mapping
-// from that format: 'session' edges become child links (start->task);
-// 'session_end' edges become ends links; task_state becomes a child
-// link to the matching Status entry. The legacy store is read-only
-// here and left in place.
-function migrateV1(){
-  if(DB.settings.migratedV1) return;
-  DB.settings.migratedV1=true;
-  const raw=Store.read('capturelog.v1'); if(!raw){ save(); return; }
-  let old; try{ old=JSON.parse(raw); }catch(e){ save(); return; }
-  if(!old.entries||!old.entries.length){ save(); return; }
-  const child=liveTypes().find(t=>t.name==='child'), ends=liveTypes().find(t=>t.name==='ends');
-  const statusByName={}; ['Active','Someday','Done','Dead'].forEach(n=>{
-    statusByName[n.toLowerCase()]=DB.entries.find(e=>!e.deleted&&e.title===n); });
-  // Done is no longer seeded; legacy done-tasks still deserve a home,
-  // so mint an ORDINARY (non-seed) Done under Status only when needed.
-  if(!statusByName.done&&old.entries.some(oe=>oe.is_task&&oe.task_state==='done')){
-    const d=createEntry({title:'Done'});
-    addEdge(d.id,'seed-e-status',child.id);
-    statusByName.done=d; }
-  const idMap={};
-  old.entries.forEach(oe=>{
-    const ne=createEntry({title:oe.title||null,body:oe.body||null,
-      estimate_min:oe.estimate_min||null,deleted:oe.deleted?1:0});
-    ne.ts=oe.ts||ne.ts; ne.created_at=oe.created_at||ne.created_at;   // preserve history
-    idMap[oe.id]=ne.id;
-    if(oe.is_task&&oe.task_state&&statusByName[oe.task_state])
-      addEdge(ne.id,statusByName[oe.task_state].id,child.id);
-  });
-  (old.edges||[]).forEach(od=>{
-    const f=idMap[od.from_id],t=idMap[od.to_id]; if(!f||!t)return;
-    const type = od.type==='session_end'?ends.id:child.id;   // session & child -> child
-    const d=addEdge(f,t,type); if(d&&od.deleted)d.deleted=1;
-  });
-  save(); toast('Imported '+old.entries.length+' entries from legacy storage');
-}
-// ==== SEC:APP/MIGRATE (END) ====
 
 // ==== SEC:APP/QUERY (BEGIN) ====
 // All derived state. Containment is a per-view property: traversals
 // take the view's type_ids. Nothing here writes.
 function typeIdsOf(view){ return (view&&view.type_ids&&view.type_ids.length)
-  ? view.type_ids : liveTypes().filter(t=>t.name==='child').map(t=>t.id); }
+  ? view.type_ids : structTids(); }
 
 function childrenOf(nodeId,typeIds){                 // edges child->parent
   return liveEdges().filter(d=>d.to_id===nodeId&&typeIds.includes(d.type_id))
@@ -756,11 +688,15 @@ function backlinksOf(id){
     .map(d=>({edge:d,node:getEntry(d.from_id),type:getType(d.type_id)}))
     .filter(x=>x.node&&x.type); }
 
-// Direct-child test — "a child of [ref]" throughout the app means a
-// live child-type edge pointing straight at ref: not other link
-// types, not grandchildren.
-function isChildOf(id,parentId){ const ct=childTid();
-  return liveEdges().some(g=>g.type_id===ct&&g.from_id===id&&g.to_id===parentId); }
+// Direct-membership test — "a member of [ref]" means a live edge of
+// one of the given types pointing straight at ref: never other types,
+// never grandmembers.
+function isLinkedTo(id,targetId,typeIds){
+  return liveEdges().some(g=>typeIds.includes(g.type_id)
+    &&g.from_id===id&&g.to_id===targetId); }
+// Structural members of an anchor: entries with a direct is a /
+// part of / of edge to it (§8 of the design).
+function membersOf(anchorKey){ return childrenOf(anchor(anchorKey).id,structTids()); }
 function descendantSet(rootId,typeIds){              // excludes the root
   const out=new Set(),stack=[rootId];
   while(stack.length){ const cur=stack.pop();
@@ -807,35 +743,91 @@ function searchInView(q,view){
       ||(inboundCount(b.e.id)-inboundCount(a.e.id))
       ||lastLinkedAt(b.e.id).localeCompare(lastLinkedAt(a.e.id))); }
 
-// Interval + urgency queries, hard-coded around the anchors.
-// An interval is ACTIVE while its start entry carries a status link
-// to the Active status entry — there is no containment root. Actives
-// may already own an end entry (a planned destination), so "has an
-// end" no longer implies "concluded"; only the status edge decides.
-function activeIntervals(){
-  const st=statusTid(), aid=anchor('active').id, seen=new Set();
+// ---- The grammar layer ----------------------------------------------
+// statusLinked: everything whose current state is the given status —
+// a live `is` edge to that status entry. Via Active it defines the
+// running intervals; via To-Do the ghosts; via Noted the inbox.
+function statusLinked(anchorKey){
+  const st=isTid(), aid=anchor(anchorKey).id, seen=new Set();
   return liveEdges().filter(g=>g.type_id===st&&g.to_id===aid)
     .map(g=>getEntry(g.from_id))
-    .filter(e=>e&&!seen.has(e.id)&&seen.add(e.id))
-    .sort((a,b)=>a.ts.localeCompare(b.ts)); }
-function nowChildren(){
-  return childrenOf(anchor('now').id,[childTid()])
-    .sort((a,b)=>b.ts.localeCompare(a.ts)); }
-// An interval's face is the ACTIVITY it was started for: its doing
-// link when one exists (intervals started since 3.2 carry one), else
-// its first child-parent (older intervals). Falls back to the entry's
-// own text via intervalLabel.
-function intervalActivity(e){
-  const dd=liveEdges().find(x=>x.from_id===e.id&&x.type_id===doingTid()
-    &&getEntry(x.to_id));
-  if(dd) return getEntry(dd.to_id);
-  const d=liveEdges().find(x=>x.from_id===e.id&&x.type_id===childTid()
-    &&getEntry(x.to_id));
-  return d?getEntry(d.to_id):null; }
-function intervalLabel(e){ const a=intervalActivity(e); return a?disp(a):disp(e); }
-function endEntryOf(startId,endTypeId){
-  const d=liveEdges().find(x=>x.to_id===startId&&x.type_id===endTypeId);
-  return d?getEntry(d.from_id):null; }
+    .filter(e=>e&&!seen.has(e.id)&&seen.add(e.id)); }
+function hasStatus(id,anchorKey){
+  return isLinkedTo(id,anchor(anchorKey).id,[isTid()]); }
+// Scoped exclusivity for `is`: setting a state removes any existing
+// `is` link whose target shares an `is a` ancestor with the new one —
+// statuses displace statuses, but `is` links into other lexicons are
+// untouched. Exclusivity is a property of the lexicon, not the type.
+function isaRoots(id,seen){ seen=seen||new Set(); if(seen.has(id)||seen.size>16) return seen;
+  liveEdges().forEach(g=>{ if(g.type_id===isaTid()&&g.from_id===id&&!seen.has(g.to_id)){
+    seen.add(g.to_id); isaRoots(g.to_id,seen); } });
+  return seen; }
+function setIs(id,targetId){
+  const roots=isaRoots(targetId);
+  liveEdges().forEach(g=>{ if(g.type_id===isTid()&&g.from_id===id){
+    const theirs=isaRoots(g.to_id);
+    if([...roots].some(x=>theirs.has(x))) removeEdge(g.id); } });
+  if(targetId!=null) addEdge(id,targetId,isTid()); }
+function clearIs(id,targetId){
+  liveEdges().forEach(g=>{ if(g.type_id===isTid()&&g.from_id===id
+    &&g.to_id===targetId) removeEdge(g.id); }); }
+// First live outgoing edge of a type; all targets of a type.
+function outOne(id,tid){ const g=liveEdges().find(x=>x.from_id===id
+  &&x.type_id===tid&&getEntry(x.to_id)); return g?getEntry(g.to_id):null; }
+function outAll(id,tid){ return liveEdges().filter(x=>x.from_id===id&&x.type_id===tid)
+  .map(x=>getEntry(x.to_id)).filter(Boolean); }
+// HANDLES (design §6). Base is disp(); an `of` link prepends its
+// target's handle (ASR/Treasurer, recursively); a bare entry (no
+// title, no body) with a doing link is named as a piece of its verb
+// (Bins/8:45). Cycle- and depth-guarded.
+function handle(eOrId,seen){
+  const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
+  seen=seen||new Set();
+  if(seen.has(e.id)||seen.size>6) return disp(e);
+  seen.add(e.id);
+  const of=outOne(e.id,ofTid());
+  if(of) return handle(of,seen)+'/'+disp(e);
+  if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
+    if(d) return handle(d,seen)+'/'+disp(e); }
+  return disp(e); }
+// Oblique first person: the I entry reads "me" everywhere except the
+// subject slot (where it is suppressed — absent `by` IS first person).
+function oblique(e){ return e.id===anchor('i').id?'me':handle(e); }
+// Verb-slot expansion: a doing target that `complements` a verb prints
+// the verb's phrase first, then its own handle —
+// "Accounted ASR/Annual Report/Invoices" from doing -> Invoices alone.
+// A bare TOKEN in the verb slot (a ghost: no title, no body, its own
+// doing link) collapses into the phrase of its deed — an interval on
+// the invoices ghost reads exactly as one on Invoices would.
+function verbPhrase(eOrId,seen){
+  const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
+  seen=seen||new Set(); if(seen.has(e.id)||seen.size>6) return handle(e);
+  seen.add(e.id);
+  const c=outOne(e.id,complementsTid());
+  if(c) return verbPhrase(c,seen)+' '+handle(e);
+  if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
+    if(d) return verbPhrase(d,seen); }
+  return handle(e); }
+// Intervals: begin entry points until -> end (outward, like every
+// clause). Active while it carries `is` -> Active; a pre-created end
+// (planned destination) does not conclude anything.
+function activeIntervals(){
+  return statusLinked('active').sort((a,b)=>a.ts.localeCompare(b.ts)); }
+function endEntryOf(startId){ return outOne(startId,untilTid()); }
+function intervalLabel(e){ const a=outOne(e.id,doingTid());
+  return a?verbPhrase(a):disp(e); }
+// GHOSTS & FULFILLMENT (design §9). A ghost is any entry `is` -> To-Do.
+// Fulfilling: re-stamp to the completion moment, drop the To-Do state,
+// and point `fulfills` at every wrapper (any moment whose `object` is
+// this ghost — promises, plans, asks) from the fulfilling entity.
+function fulfillGhost(ghostId,fromId){
+  updateEntry(ghostId,{ts:nowISO()});
+  clearIs(ghostId,anchor('todo').id);
+  const src=fromId||ghostId;
+  liveEdges().forEach(g=>{ if(g.type_id===objectTid()&&g.to_id===ghostId
+      &&getEntry(g.from_id)&&g.from_id!==src)
+    addEdge(src,g.from_id,fulfillsTid()); });
+  toast('Fulfilled'); }
 // ==== SEC:APP/QUERY (END) ====
 
 // ==== SEC:APP/EXPORT (BEGIN) ====
@@ -1287,15 +1279,21 @@ function tabState(id){ return UI.state[id]||(UI.state[id]={}); }
 UI.rerender=function(){
   renderRunbar(); renderTabbar();
   const v=$('#view'); v.innerHTML='';
-  const shown=liveTabs().filter(t=>!EDITOR_TAB_CLASSES.includes(t.cls));
+  const RENDER={create:renderCreate,inbox:renderInbox,active:renderActive,
+    explore:renderExplore,todo:renderTodo,views:renderViews,links:renderLinks,
+    tabs:renderTabs,menu:renderMenuTab};
+  // Only tabs this build can actually render are eligible; a store from
+  // an earlier version may still carry tabs of retired classes, and a
+  // missing renderer must never throw.
+  const shown=liveTabs().filter(t=>!EDITOR_TAB_CLASSES.includes(t.cls)&&RENDER[t.cls]);
+  const cur=getTab(UI.tabId);
   const tab=UI.tabId==='menu' ? {id:'menu',cls:'menu'}
-    : ((getTab(UI.tabId)&&!EDITOR_TAB_CLASSES.includes(getTab(UI.tabId).cls))
-        ? getTab(UI.tabId) : shown[0]);
-  if(!tab){return;}
+    : ((cur&&!EDITOR_TAB_CLASSES.includes(cur.cls)&&RENDER[cur.cls]) ? cur : shown[0]);
+  if(!tab){ v.appendChild(el('div','empty','No tabs to show — open ⋯ to reset.')); return; }
   UI.tabId=tab.id;
-  ({create:renderCreate,now:renderNow,interval:renderInterval,explore:renderExplore,
-    exclusive:renderExclusive,views:renderViews,links:renderLinks,
-    tabs:renderTabs,menu:renderMenuTab})[tab.cls](v,tab);
+  const fn=RENDER[tab.cls];
+  if(fn) fn(v,tab);
+  else v.appendChild(el('div','empty','This tab can\u2019t be shown.'));
 };
 const EDITOR_TAB_CLASSES=['views','links','tabs'];   // live in the ⋯ tab now
 function renderTabbar(){
@@ -1317,23 +1315,24 @@ function renderTabbar(){
 // ==== SEC:APP/UI/ROOT (END) ====
 
 // ==== SEC:APP/UI/RUNBAR (BEGIN) ====
-// Slim live strip at the top: children of Now first, in red (tap to
-// edit/resolve), then every active interval in green, labelled by its
-// activity (tap to jump to the active tab). Ticks every 30s.
+// Slim live strip at the top: Noted entries first, in red (the inbox
+// pressure — tap to triage), then every active interval in green,
+// labelled by its verb phrase (tap to jump to the active tab). Ticks
+// every 30s.
 function renderRunbar(){
   const bar=$('#runbar');
   [...bar.querySelectorAll('.rchip')].forEach(x=>x.remove());
   let any=false;
-  nowChildren().forEach(e=>{ any=true;
+  statusLinked('noted').sort((a,b)=>b.ts.localeCompare(a.ts)).forEach(e=>{ any=true;
     const c=el('button','rchip urgent');
-    c.appendChild(el('span',null,disp(e)));
-    c.addEventListener('click',()=>openEditor(e.id));
+    c.appendChild(el('span',null,handle(e)));
+    c.addEventListener('click',()=>openTaskSheet(e.id));
     bar.appendChild(c); });
   activeIntervals().forEach(e=>{ any=true;
     const c=el('button','rchip');
     c.appendChild(el('span',null,intervalLabel(e)));
     c.appendChild(el('span','el',fmtDur(Date.now()-new Date(e.ts))));
-    c.addEventListener('click',()=>{ const t=liveTabs().find(x=>x.cls==='interval');
+    c.addEventListener('click',()=>{ const t=liveTabs().find(x=>x.cls==='active');
       if(t){ UI.tabId=t.id; UI.rerender(); } });
     bar.appendChild(c); });
   bar.classList.toggle('on',any);
@@ -1451,7 +1450,7 @@ function linksField(container,entryId,fieldKey,afterChange){
     pickEntry(fieldKey,e=>{
       const tKey=fieldKey+'.type';
       const remembered=getType(DB.settings.mem[tKey]);
-      const tid=(remembered||liveTypes().find(t=>t.name==='child')||liveTypes()[0]).id;
+      const tid=(remembered||getType(isaTid())||liveTypes()[0]).id;
       addEdge(entryId,e.id,tid); afterChange(); }); });
   wrap.appendChild(add);
   container.appendChild(wrap); }
@@ -1496,73 +1495,10 @@ function entryTopRow(e){
   const add=el('button','tbtn-add','＋'); add.title='New entry under this one';
   add.addEventListener('click',()=>{
     const n=createEntry();
-    addEdge(n.id,e.id,(liveTypes().find(t=>t.name==='child')||liveTypes()[0]).id);
+    addEdge(n.id,e.id,partofTid());
     openEditor(n.id); });
   top.appendChild(add);
   return top; }
-// Activity capture — the shared field+＋+chips control of the ❗ and 🕓
-// tabs. Chips come from opts.roots (anchor keys, default the
-// Activities subtree): all descendants, or direct children only with
-// opts.direct — the interval tab is direct, leaning on the convention
-// that every startable activity is a DIRECT child of Activities
-// however deep it also sits in category hierarchies like Travel (deep
-// traversal is fraught: activities accumulate interval starts as
-// children). Ordering per chipCmp (seed first, titled, body-only,
-// bare). Typing filters: a chip survives if it or ANY ancestor — up to
-// and including the root anchors themselves — matches, so typing
-// "people" keeps everyone under People, and "baby" keeps "Nappy" when
-// it lives under Baby. What ＋ and a chip tap DO is the caller's
-// business (opts.onPlus(text) / opts.onChip(entry)).
-function activityCapture(v,st,opts){
-  const row=el('div','f-toprow');
-  const f=el('input','f-title'); f.placeholder=opts.placeholder||'Activity…';
-  f.value=st.q||'';
-  f.addEventListener('input',()=>{ st.q=f.value; paint(); });
-  row.appendChild(f);
-  const plus=el('button','tbtn-add','＋'); plus.title='Create from the typed text';
-  plus.addEventListener('click',()=>{ const t=(st.q||'').trim(); if(!t)return; opts.onPlus(t); });
-  row.appendChild(plus);
-  v.appendChild(row);
-  const cloud=el('div','chipcloud'); v.appendChild(cloud);
-  function paint(){
-    cloud.innerHTML='';
-    const ct=childTid();
-    const rootIds=(opts.roots||['activities']).map(k=>anchor(k).id);
-    const chips=new Set();
-    if(opts.direct){
-      rootIds.forEach(r=>childrenOf(r,[ct]).forEach(k=>{
-        if(!rootIds.includes(k.id)) chips.add(k.id); }));
-    } else {
-      const bfs=[...rootIds];
-      while(bfs.length){ const c=bfs.pop();
-        childrenOf(c,[ct]).forEach(k=>{
-          if(!rootIds.includes(k.id)&&!chips.has(k.id)){ chips.add(k.id); bfs.push(k.id); } }); }
-    }
-    const pool=new Set([...chips,...rootIds]);       // ancestor-match pool includes the roots
-    const q=(st.q||'').trim();
-    let ids=[...chips];
-    if(q){ const memo=new Map();
-      const ok=id=>{ if(memo.has(id)) return memo.get(id);
-        memo.set(id,false);                          // cycle guard
-        const e=getEntry(id); if(!e) return false;
-        let r=fuzzy(q,e.title?e.title:(e.body||''))>=0;
-        if(!r) r=matchedParents(id,pool,[ct]).some(p=>ok(p.id));
-        memo.set(id,r); return r; };
-      ids=ids.filter(ok); }
-    ids.map(getEntry).filter(Boolean)
-      .sort(chipCmp)
-      .forEach(e=>{ const c=el('button','chip'+(e.title?'':' untitled'),disp(e));
-        c.addEventListener('click',()=>opts.onChip(e));
-        cloud.appendChild(c); });
-    if(!ids.length) cloud.appendChild(el('div','empty slim',
-      q?'No matches.':(opts.emptyText||'Nothing to offer yet.'))); }
-  paint();
-  // Focus on arrival. On a cold page load browsers honor focus() but
-  // may refuse to raise the keyboard without a user gesture — that
-  // part is policy, not fixable from script. The retry catches renders
-  // where the field wasn't attached/layouted yet at call time.
-  f.setAttribute('autofocus','');
-  f.focus(); setTimeout(()=>{ if(document.activeElement!==f) f.focus(); },250); }
 // ==== SEC:APP/UI/CHIPS (END) ====
 
 // ==== SEC:APP/UI/TAB_CREATE (BEGIN) ====
@@ -1633,7 +1569,7 @@ function renderCreate(v,tab){
     add.addEventListener('click',()=>{
       pickEntry(fieldKey,ent=>{
         const remembered=getType(DB.settings.mem[fieldKey+'.type']);
-        const tid=(remembered||liveTypes().find(t=>t.name==='child')||liveTypes()[0]).id;
+        const tid=(remembered||getType(isaTid())||liveTypes()[0]).id;
         d.links.push({to:ent.id,type:tid}); saveDrafts(); }); });
     lf.appendChild(add); }
   drawLinks();
@@ -1641,61 +1577,82 @@ function renderCreate(v,tab){
 }
 // ==== SEC:APP/UI/TAB_CREATE (END) ====
 
-// ==== SEC:APP/UI/TAB_NOW (BEGIN) ====
-// "❗": urgency capture. Nothing is created merely by opening the tab:
-// an urgent item exists only once ＋ is tapped (a titled child of the
-// Now anchor, from the field text) or an activity chip is tapped
-// (linking that ACTIVITY itself under Now). Children of Now show as
-// red chips in the runbar — tap one there to edit or resolve it.
-function renderNow(v,tab){
+// ==== SEC:APP/UI/TAB_INBOX (BEGIN) ====
+// "❗" — the Noted inbox. The quick dumping spot: a field and ＋ that
+// create {title, is -> Noted} in one gesture, asking nothing else.
+// Below, everything currently Noted, newest first — the backlog of
+// jottings awaiting formalization. Tapping a row opens the task sheet
+// (SEC:APP/UI/EDIT_TASK) to retitle, set a real status, and attach the
+// clauses that turn a jot into a sentence. Noted entries burn red in
+// the runbar until triaged.
+function renderInbox(v,tab){
   const st=tabState(tab.id);
-  activityCapture(v,st,{ placeholder:'What must not slip…',
-    onPlus:t=>{
-      const n=createEntry({title:t}); addEdge(n.id,anchor('now').id,childTid());
-      st.q=''; toast('Noted — see the red row'); UI.rerender(); },
-    onChip:a=>{
-      const nid=anchor('now').id, ct=childTid();
-      const already=liveEdges().some(d=>d.from_id===a.id&&d.to_id===nid&&d.type_id===ct);
-      if(!already) addEdge(a.id,nid,ct);
-      st.q=''; toast((already?'Already urgent: ':'Urgent: ')+disp(a)); UI.rerender(); } });
+  const row=el('div','f-toprow');
+  const f=el('input','f-title'); f.placeholder='What must not slip…'; f.value=st.q||'';
+  f.addEventListener('input',()=>{ st.q=f.value; });
+  row.appendChild(f);
+  const plus=el('button','tbtn-add','＋'); plus.title='Note it';
+  plus.addEventListener('click',()=>{ const t=(st.q||'').trim(); if(!t) return;
+    const e=createEntry({title:t});
+    addEdge(e.id,anchor('noted').id,isTid());
+    st.q=''; toast('Noted'); UI.rerender(); });
+  row.appendChild(plus);
+  v.appendChild(row);
+  const list=statusLinked('noted').sort((a,b)=>b.ts.localeCompare(a.ts));
+  if(!list.length){ v.appendChild(el('div','empty','Inbox zero.')); return; }
+  list.forEach(e=>{
+    const r=el('div','trow');
+    r.appendChild(el('span','chev','❗'));
+    const nm=el('button','nm'+dispCls(e),handle(e)); nm.style.textAlign='left';
+    nm.addEventListener('click',()=>openTaskSheet(e.id));
+    r.appendChild(nm);
+    v.appendChild(r); });
+  setTimeout(()=>f.focus(),40);
 }
-// ==== SEC:APP/UI/TAB_NOW (END) ====
+// ==== SEC:APP/UI/TAB_INBOX (END) ====
 
-// ==== SEC:APP/UI/TAB_INTERVAL (BEGIN) ====
-// "🕓" — the ACTIVE tab. An interval is active while its start entry
-// carries a status link to the Active status entry; there is no
-// containment root. Every active interval is a row with a running
-// clock, wearing the ACTIVITY it was started for. Starting: tap an
-// activity chip to begin an interval that is a child of the activity,
-// carries a doing edge to it (the explore tab's concluded-interval
-// rows read the doing edge), and is marked active by its status edge;
-// or type a fresh name and ＋ to mint a parentless activity entry and
-// start under it. Tapping a row opens the INTERVAL SHEET
-// (SEC:APP/UI/EDIT_INTERVAL) — with/from/to — not the raw entry
-// editor. An active interval MAY already own its end entry (selecting
-// a To place pre-creates it to hold the planned destination); "end
-// now" re-stamps that end entry to the present and deletes the status
-// link — concludeInterval, shared with nothing else yet but public to
-// the sheet if it ever grows an end control.
+// ==== SEC:APP/UI/TAB_ACTIVE (BEGIN) ====
+// "🕓" — the active intervals tab. An interval is active while its
+// begin entry carries `is` -> Active; there is no containment root,
+// and a begin entry that is simply never marked Active (an
+// inauguration, a years-long role) clocks nowhere — legitimately
+// unended. Rows are running clocks wearing their verb phrase; tapping
+// one opens the interval sheet. The VERB CLOUD below offers, per
+// design §8: `is a` members of Activity, everything reaching one
+// through a chain of `complements` links, every ghost (To-Do), and
+// every Noted entry — an open task or a standing complement is one
+// tap from a running clock. Typing filters; the ancestor match walks
+// complements / of / is a upward, so "asr" keeps ASR/…/Invoices. ＋
+// mints a titled `is a` member of Activity from the field text and
+// starts it at once.
 function concludeInterval(e){
-  let en=endEntryOf(e.id,endsTid());
+  let en=endEntryOf(e.id);
   if(en) updateEntry(en.id,{ts:nowISO()});
-  else { en=createEntry(); addEdge(en.id,e.id,endsTid()); }
-  const st=statusTid(), aid=anchor('active').id;
-  liveEdges().forEach(g=>{
-    if(g.from_id===e.id&&g.type_id===st&&g.to_id===aid) removeEdge(g.id); });
+  else { en=createEntry(); addEdge(e.id,en.id,untilTid()); }
+  clearIs(e.id,anchor('active').id);
   toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
   return en; }
-function renderInterval(v,tab){
+function verbCloudItems(){
+  const seen=new Set(), out=[];
+  const add=e=>{ if(e&&!seen.has(e.id)){ seen.add(e.id); out.push(e); } };
+  const verbs=childrenOf(anchor('activity').id,[isaTid()]);
+  verbs.forEach(add);
+  const bfs=verbs.map(v=>v.id), cm=complementsTid();
+  while(bfs.length){ const cur=bfs.pop();
+    liveEdges().forEach(g=>{ if(g.type_id===cm&&g.to_id===cur){
+      const e=getEntry(g.from_id);
+      if(e&&!seen.has(e.id)){ add(e); bfs.push(e.id); } } }); }
+  statusLinked('todo').forEach(add);
+  statusLinked('noted').forEach(add);
+  return out; }
+function renderActive(v,tab){
   const st=tabState(tab.id);
-  const ct=childTid();
   const active=activeIntervals();
   if(!active.length) v.appendChild(el('div','empty slim','Just Being'));
   active.forEach(e=>{
     const row=el('div','trow');
     row.appendChild(el('span','chev','▶'));
-    const a=intervalActivity(e);
-    const nm=el('button','nm'+dispCls(a||e),intervalLabel(e)); nm.style.textAlign='left';
+    const nm=el('button','nm',intervalLabel(e)); nm.style.textAlign='left';
     nm.addEventListener('click',()=>openIntervalEditor(e.id));
     row.appendChild(nm);
     row.appendChild(el('span','cnt',fmtDur(Date.now()-new Date(e.ts))));
@@ -1704,15 +1661,46 @@ function renderInterval(v,tab){
     row.appendChild(end);
     v.appendChild(row); });
   const begin=a=>{ const e=createEntry();
-    addEdge(e.id,anchor('active').id,statusTid());
-    addEdge(e.id,a.id,ct); addEdge(e.id,a.id,doingTid()); };
-  activityCapture(v,st,{ placeholder:'Start an activity…',
-    roots:['activities','people','active','now'], direct:true,
-    onChip:a=>{ begin(a); st.q=''; toast('Started · '+disp(a)); UI.rerender(); },
-    onPlus:t=>{ const a=createEntry({title:t});          // parentless activity
-      begin(a); st.q=''; toast('Started · '+t); UI.rerender(); } });
+    addEdge(e.id,a.id,doingTid());
+    addEdge(e.id,anchor('active').id,isTid()); };
+  const row=el('div','f-toprow');
+  const f=el('input','f-title'); f.placeholder='Start…'; f.value=st.q||'';
+  row.appendChild(f);
+  const plus=el('button','tbtn-add','＋'); plus.title='New activity, started';
+  plus.addEventListener('click',()=>{ const t=(st.q||'').trim(); if(!t) return;
+    const a=createEntry({title:t}); addEdge(a.id,anchor('activity').id,isaTid());
+    begin(a); st.q=''; toast('Started · '+t); UI.rerender(); });
+  row.appendChild(plus);
+  v.appendChild(row);
+  const cloud=el('div','chipcloud'); v.appendChild(cloud);
+  const up=id=>liveEdges().filter(g=>g.from_id===id
+      &&[complementsTid(),ofTid(),isaTid(),partofTid()].includes(g.type_id))
+    .map(g=>g.to_id);
+  function paint(){
+    cloud.innerHTML='';
+    let items=verbCloudItems();
+    const q=(st.q||'').trim();
+    if(q){ const memo=new Map();
+      const ok=id=>{ if(memo.has(id)) return memo.get(id);
+        memo.set(id,false);                          // cycle guard
+        const e=getEntry(id); if(!e) return false;
+        let m=fuzzy(q,e.title?e.title:(e.body||''))>=0;
+        if(!m) m=up(id).some(ok);
+        memo.set(id,m); return m; };
+      items=items.filter(e=>ok(e.id)); }
+    items.sort(chipCmp).forEach(e=>{
+      const c=el('button','chip'+(e.title?'':' untitled'),handle(e));
+      c.addEventListener('click',()=>{ begin(e); st.q='';
+        toast('Started · '+handle(e)); UI.rerender(); });
+      cloud.appendChild(c); });
+    if(!items.length) cloud.appendChild(el('div','empty slim',
+      q?'No matches.':'No verbs yet — type one and ＋.')); }
+  f.addEventListener('input',()=>{ st.q=f.value; paint(); });
+  paint();
+  f.setAttribute('autofocus','');
+  f.focus(); setTimeout(()=>{ if(document.activeElement!==f) f.focus(); },250);
 }
-// ==== SEC:APP/UI/TAB_INTERVAL (END) ====
+// ==== SEC:APP/UI/TAB_ACTIVE (END) ====
 
 // ==== SEC:APP/UI/TAB_EXPLORE (BEGIN) ====
 // "🧭": view field at top, then the entry tree (or a flat date-sorted
@@ -1749,86 +1737,89 @@ function renderExplore(v,tab){
       let list=[...matched].map(getEntry).filter(Boolean);
       if(st.q&&st.q.trim())
         list=list.filter(e=>fuzzy(st.q.trim(),e.title?e.title:(e.body||''))>=0);
-      // Every flat row is ONE continuous line led by its time. An
-      // entry with exactly one incoming ends link is a BEGINNING: its
-      // end entry is dropped from the list and the pair reports
-      // together, led by the start–end range —
-      //   8:30–8:47 Driving from home to school with Alice, Bob
-      //   : begin title / begin body / end title / end body
-      // — but an ACTIVE interval (status link to Active) is never a
-      // beginning even when it already owns a pre-created end entry:
-      // its provisional end timestamp would fake a range. It renders
-      // as an ordinary row until concluded. doing shows when there is
-      // exactly one doing link AND its target is a direct child of
-      // Activities; from/to are the START and END entries' single at
-      // links; with gathers every with link. Every OTHER entry
-      // renders as
-      //   time parent: title with … at … / body
-      //   / Children: titles, N untitled / Child of: titles, N untitled
-      // — parent/children throughout mean DIRECT child-type edges
-      // (never other link types, never grandchildren, regardless of
-      // the view's containment types): the parent prefix when exactly
-      // one, the Child of clause when several. Throughout, ':' and
-      // '/' print only between two non-empty pieces.
-      const et=endsTid(), stt=statusTid(), aid=anchor('active').id;
-      const endsIn={};                       // startId -> [end entries]
-      const activeIds=new Set();
-      liveEdges().forEach(g=>{
-        if(g.type_id===et){ const ee=getEntry(g.from_id);
-          if(ee) (endsIn[g.to_id]=endsIn[g.to_id]||[]).push(ee); }
-        else if(g.type_id===stt&&g.to_id===aid) activeIds.add(g.from_id); });
-      const beg=new Map();                   // beginningId -> its single end
-      list.forEach(e=>{ const ee=endsIn[e.id];
-        if(ee&&ee.length===1&&!activeIds.has(e.id)) beg.set(e.id,ee[0]); });
+      // THE DISPLAY GRAMMAR (design §12). Every flat row is one
+      // continuous line: a time lead, then the entry's sentence read
+      // off its outgoing clauses in a fixed order —
+      //   [subject] verb-phrase [recipients] [objects] [complements]
+      //   [is X] [is a X] [part of X] [of X] [complements X]
+      //   [with …] [at …|from X to Y] [for …] [due <t>] [fulfills …]
+      //   : title / body [/ end title / end body]
+      // An entry with an `until` target that is NOT Active is an
+      // interval pair: lead becomes the begin–end range, the end
+      // entry's own row is suppressed, from/to are the begin and end
+      // entries' single `at` links, and the end's title/body trail the
+      // begin's. `:` and `/` print only between two non-empty pieces;
+      // `by` is suppressed for the first person; `of` shapes handles
+      // everywhere and additionally prints as a clause on its own row.
+      const untilT=untilTid(), activeId=anchor('active').id, isT=isTid();
+      const beg=new Map();                    // begin id -> end entry
+      list.forEach(e=>{ if(hasStatus(e.id,'active')) return;
+        const en=outOne(e.id,untilT); if(en) beg.set(e.id,en); });
       const consumed=new Set([...beg.values()].map(x=>x.id));
       list=list.filter(e=>beg.has(e.id)||!consumed.has(e.id));
       list.sort((a,b)=>b.ts.localeCompare(a.ts));
       if(!list.length){ box.appendChild(el('div','empty','No matches.')); return; }
-      const outOf=(id,tid)=>liveEdges().filter(g=>g.from_id===id&&g.type_id===tid)
-        .map(g=>getEntry(g.to_id)).filter(Boolean);
       const first=s=>(s||'').split('\n')[0];
-      const nameList=arr=>{ const named=arr.filter(x=>x.title).map(x=>x.title);
-        const anon=arr.length-named.length;
-        if(anon) named.push(anon+' untitled');
-        return named.join(', '); };
+      const iId=anchor('i').id;
       list.slice(0,300).forEach(e=>{
         const endE=beg.get(e.id);
         const r=el('button','flatrow');
         const line=el('div','line');
-        let lead; const hdr=[]; let pieces;
+        let lead;
         if(endE){
           const sameDay=new Date(e.ts).toDateString()===new Date(endE.ts).toDateString();
           lead=fmtDT(e.ts)+'–'+(sameDay?fmtDTParts(endE.ts).time:fmtDT(endE.ts));
-          const doing=outOf(e.id,doingTid()), from=outOf(e.id,atTid()),
-                to=outOf(endE.id,atTid()), withs=outOf(e.id,withTid());
-          if(doing.length===1&&isChildOf(doing[0].id,anchor('activities').id))
-            hdr.push(disp(doing[0]));
-          if(from.length===1)  hdr.push('from '+disp(from[0]));
-          if(to.length===1)    hdr.push('to '+disp(to[0]));
-          if(withs.length)     hdr.push('with '+withs.map(disp).join(', '));
-          pieces=[[': ',e.title],[' / ',first(e.body)],
-                  [' / ',endE.title],[' / ',first(endE.body)]];
-          r.addEventListener('click',()=>openIntervalEditor(e.id));
+        } else lead=fmtDT(e.ts);
+        const hdr=[];
+        const subj=outOne(e.id,byTid());
+        if(subj&&subj.id!==iId) hdr.push(handle(subj));
+        const verb=outOne(e.id,doingTid());
+        // A verbless entry is its own subject noun: the title leads
+        // ("Annual Report part of ASR/Treasurer"); with a verb, the
+        // title is trailing commentary after ':'.
+        if(!verb&&e.title) hdr.push(e.title);
+        if(verb) hdr.push(verbPhrase(verb));
+        const recs=outAll(e.id,recipientTid());
+        if(recs.length) hdr.push(recs.map(oblique).join(', '));
+        const objs=outAll(e.id,objectTid());
+        if(objs.length) hdr.push(objs.map(handle).join(', '));
+        const comps=outAll(e.id,complementTid());
+        if(comps.length) hdr.push(comps.map(handle).join(', '));
+        outAll(e.id,isT).forEach(t=>hdr.push('is '+handle(t)));
+        outAll(e.id,isaTid()).forEach(t=>hdr.push('is a '+handle(t)));
+        outAll(e.id,partofTid()).forEach(t=>hdr.push('part of '+handle(t)));
+        outAll(e.id,ofTid()).forEach(t=>hdr.push('of '+handle(t)));
+        outAll(e.id,complementsTid()).forEach(t=>hdr.push('complements '+handle(t)));
+        const withs=outAll(e.id,withTid());
+        if(withs.length) hdr.push('with '+withs.map(oblique).join(', '));
+        if(endE){
+          const from=outAll(e.id,atTid()), to=outAll(endE.id,atTid());
+          if(from.length===1) hdr.push('from '+handle(from[0]));
+          else if(from.length) hdr.push('at '+from.map(handle).join(', '));
+          if(to.length===1) hdr.push('to '+handle(to[0]));
+          else if(to.length) hdr.push('at '+to.map(handle).join(', '));
         } else {
-          lead=fmtDT(e.ts);
-          const ct=childTid();
-          const parents=parentsOf(e.id,[ct]);
-          if(parents.length===1) hdr.push(disp(parents[0]));
-          const withs=outOf(e.id,withTid()), ats=outOf(e.id,atTid());
-          const kids=childrenOf(e.id,[ct]);
-          pieces=[[': ',e.title],
-            [' ',withs.length?'with '+withs.map(disp).join(', '):''],
-            [' ',ats.length?'at '+ats.map(disp).join(', '):''],
-            [' / ',first(e.body)],
-            [' / ',kids.length?'Children: '+nameList(kids):''],
-            [' / ',parents.length>1?'Child of: '+nameList(parents):'']];
-          r.addEventListener('click',()=>openEditor(e.id));
+          const ats=outAll(e.id,atTid());
+          if(ats.length) hdr.push('at '+ats.map(handle).join(', '));
         }
-        line.appendChild(el('span','rng',lead));
+        const bens=outAll(e.id,beneficiaryTid());
+        if(bens.length) hdr.push('for '+bens.map(oblique).join(', '));
+        const dues=outAll(e.id,dueTid());
+        if(dues.length) hdr.push('due '+dues.map(d=>fmtDT(d.ts)).join(', '));
+        const fuls=[...outAll(e.id,fulfillsTid()),
+                    ...(endE?outAll(endE.id,fulfillsTid()):[])];
+        if(fuls.length) hdr.push('fulfills '+fuls.map(handle).join(', '));
         let txt=hdr.join(' ');
+        const pieces=[[': ',verb?e.title:''],[' / ',first(e.body)]];
+        if(endE){ pieces.push([' / ',endE.title],[' / ',first(endE.body)]); }
         pieces.forEach(([sep,val])=>{ if(val) txt+=(txt?sep:'')+val; });
+        line.appendChild(el('span','rng',lead));
         line.appendChild(el('span','nm',txt));
         r.appendChild(line);
+        r.addEventListener('click',()=>{
+          if(endE||hasStatus(e.id,'active')) openIntervalEditor(e.id);
+          else if(hasStatus(e.id,'todo')||hasStatus(e.id,'noted')) openTaskSheet(e.id);
+          else openEditor(e.id); });
         box.appendChild(r); });
     }
   }
@@ -1836,22 +1827,41 @@ function renderExplore(v,tab){
 }
 // ==== SEC:APP/UI/TAB_EXPLORE (END) ====
 
-// ==== SEC:APP/UI/TAB_EXCL (BEGIN) ====
-// "☑": list view at top; tapping an entry opens the swap panel where
-// exactly-one membership in the swap view is enforced by the gesture.
-function renderExclusive(v,tab){
-  const st=tabState(tab.id); st.expand=st.expand||new Set();
-  const view=viewField(v,'tab'+tab.id+'.list',tab.cfg.list_view_id,()=>UI.rerender());
-  const q=el('input'); q.placeholder='Search'; q.style.cssText='width:100%;margin:10px 0;padding:9px 12px';
-  q.value=st.q||''; q.addEventListener('input',()=>{st.q=q.value;redraw();});
-  v.appendChild(q);
-  const box=el('div'); v.appendChild(box);
-  function redraw(){ box.innerHTML='';
-    renderTree(box,{view,q:st.q,expand:st.expand,refresh:redraw,
-      onPick:e=>openExclusivePanel(e.id,tab)}); }
-  redraw();
+// ==== SEC:APP/UI/TAB_TODO (BEGIN) ====
+// "☑" — the ghosts. All and only entries `is` -> To-Do, due time on
+// the right (overdue in red). The top field + ＋ mints a ghost
+// {title, is -> To-Do} and opens the task sheet for its optional
+// clauses. Tapping a row reopens the same sheet.
+function renderTodo(v,tab){
+  const st=tabState(tab.id);
+  const row=el('div','f-toprow');
+  const f=el('input','f-title'); f.placeholder='New to-do…'; f.value=st.q||'';
+  f.addEventListener('input',()=>{ st.q=f.value; });
+  row.appendChild(f);
+  const plus=el('button','tbtn-add','＋'); plus.title='Create a to-do';
+  plus.addEventListener('click',()=>{ const t=(st.q||'').trim(); if(!t) return;
+    const e=createEntry({title:t});
+    addEdge(e.id,anchor('todo').id,isTid());
+    st.q=''; toast('To-do · '+t); UI.rerender();
+    openTaskSheet(e.id); });
+  row.appendChild(plus);
+  v.appendChild(row);
+  const list=statusLinked('todo').sort((a,b)=>b.ts.localeCompare(a.ts));
+  if(!list.length){ v.appendChild(el('div','empty','Nothing to do.')); return; }
+  const now=nowISO();
+  list.forEach(e=>{
+    const r=el('div','trow');
+    r.appendChild(el('span','chev','☐'));
+    const nm=el('button','nm'+dispCls(e),handle(e)); nm.style.textAlign='left';
+    nm.addEventListener('click',()=>openTaskSheet(e.id));
+    r.appendChild(nm);
+    const d=outOne(e.id,dueTid());
+    if(d){ const c=el('span','cnt','due '+fmtDT(d.ts));
+      if(d.ts<now) c.style.color='var(--red)';
+      r.appendChild(c); }
+    v.appendChild(r); });
 }
-// ==== SEC:APP/UI/TAB_EXCL (END) ====
+// ==== SEC:APP/UI/TAB_TODO (END) ====
 
 // ==== SEC:APP/UI/TAB_VIEWS (BEGIN) ====
 function renderViews(v,tab){
@@ -1860,7 +1870,7 @@ function renderViews(v,tab){
   const nb=el('button','bigbtn','＋ New view');
   nb.style.cssText='margin-top:0;flex:1;width:auto';
   nb.addEventListener('click',()=>{ const vw=createView({name:'new view',
-    type_ids:[liveTypes().find(t=>t.name==='child').id]});
+    type_ids:structTids()});
     openViewEditor(vw.id); });
   row.appendChild(nb);
   const s=el('button','sorttog',st.sort==='name'?'by name':'by count');
@@ -1967,32 +1977,25 @@ function openEditor(entryId){
 // ==== SEC:APP/UI/EDITOR (END) ====
 
 // ==== SEC:APP/UI/EDIT_INTERVAL (BEGIN) ====
-// The interval sheet — what tapping an interval opens (running rows on
-// the 🕓 tab, concluded-interval rows in explore) instead of the raw
-// entry editor. It edits the interval's RELATIONS:
-//   With — toggled chips over the children of People; each selection
-//   is a with edge from the interval's START entry (any number).
-//   From / To — chips over the children of Places, exactly-one
-//   enforced by the gesture; both are at edges ("this moment happened
-//   at this place"): From sits on the START entry, To on the END
-//   entry. Selecting a To place on an interval with no end entry yet
-//   PRE-CREATES one (ends-linked, timestamped provisionally) to carry
-//   the planned destination — the interval STAYS ACTIVE; only "end
-//   now" re-stamps that entry and clears the status link. These two
-//   fields appear only when the interval's activity is a DIRECT child
-//   of Travel — one child edge straight to it, per the app-wide
-//   reading of "child".
-// Each chip cloud ends in a ＋ new… chip that mints a titled child of
-// the anchor and selects it at once. The underlying start/end entries
-// (title, body, timestamp, delete) stay one tap away at the bottom.
+// The interval sheet — what tapping an interval opens (active rows on
+// the 🕓 tab, interval rows in explore). Header: verb phrase, then
+// active/concluded timing. Fields:
+//   With — Person cloud, any number of `with` edges from the begin.
+//   From / To — Place cloud, exactly-one by gesture; both are `at`
+//   edges (From on the begin entry, To on the end entry). Offered for
+//   EVERY interval — locations are universal clauses. Selecting a To
+//   place with no end entry yet PRE-CREATES it (begin -until-> end,
+//   provisionally timestamped) to hold the planned destination; the
+//   interval stays active until "end now" re-stamps it.
+//   task done — shown when the interval's doing target is a ghost:
+//   runs the fulfillment gesture from this interval's end entry
+//   (concluding first if still active).
 function openIntervalEditor(startId){
   Modal.push((m,body)=>{
     const e=getEntry(startId);
     if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
-    const endE=endEntryOf(e.id,endsTid());
-    const act=intervalActivity(e);
-    const isActive=liveEdges().some(g=>g.from_id===e.id
-      &&g.type_id===statusTid()&&g.to_id===anchor('active').id);
+    const endE=endEntryOf(e.id);
+    const isActive=hasStatus(e.id,'active');
 
     body.appendChild(el('div','f-lbl','Interval'));
     const nm=el('button',null,intervalLabel(e));
@@ -2007,26 +2010,23 @@ function openIntervalEditor(startId){
     when.style.cssText='color:var(--muted);font-family:var(--mono);font-size:12px;margin-top:2px';
     body.appendChild(when);
 
-    // A To selection needs an end entry to hang its at link on; when
-    // none exists yet, pre-create it — provisionally timestamped, the
-    // interval stays active until "end now" re-stamps it.
     const ensureEnd=()=>{
-      const en=createEntry(); addEdge(en.id,e.id,endsTid());
+      const en=createEntry(); addEdge(e.id,en.id,untilTid());
       UI.rerender(); return en; };
 
-    // A relation field: chips over the direct children of an anchor;
-    // selection = an edge of typeId from opts.subject() — which may
-    // not exist yet (To on a running interval), in which case
-    // opts.ensureSubject() is invoked to end the interval first.
+    // A relation field: chips over an `is a` lexicon; selection = an
+    // edge of typeId from opts.subject() — which may not exist yet
+    // (To on a running interval), in which case opts.ensureSubject()
+    // pre-creates the end entry.
     const relField=(label,typeId,rootKey,opts)=>{
       body.appendChild(el('div','f-lbl',label));
       const row=el('div','chiprow'); body.appendChild(row);
       const cur=()=>{ const s=opts.subject(); return s
         ? liveEdges().filter(g=>g.from_id===s.id&&g.type_id===typeId) : []; };
       const draw=()=>{ row.innerHTML='';
-        const root=anchor(rootKey), ct=childTid();
+        const root=anchor(rootKey);
         const curIds=new Set(cur().map(g=>g.to_id));
-        const kids=childrenOf(root.id,[ct]).sort(chipCmp);
+        const kids=childrenOf(root.id,[isaTid()]).sort(chipCmp);
         const select=p=>{ const s=opts.subject()||opts.ensureSubject();
           if(opts.exclusive) cur().forEach(g=>removeEdge(g.id));
           addEdge(s.id,p.id,typeId); Modal.refresh(); };
@@ -2038,26 +2038,33 @@ function openIntervalEditor(startId){
             else select(p); }})); });
         const add=el('button','chip add','＋ new…');
         add.addEventListener('click',()=>{
-          const t=prompt('New entry under '+disp(root)+':');
+          const t=prompt('New '+handle(root)+':');
           if(t&&t.trim()){ const n=createEntry({title:t.trim()});
-            addEdge(n.id,root.id,ct); select(n); } });
+            addEdge(n.id,root.id,isaTid()); select(n); } });
         row.appendChild(add);
         if(!kids.length&&!curIds.size)
-          row.appendChild(el('span','empty slim','No '+disp(root)+' yet — ＋ to add.')); };
+          row.appendChild(el('span','empty slim','No '+handle(root)+' yet — ＋ to add.')); };
       draw(); };
 
-    relField('With',withTid(),'people',{subject:()=>getEntry(e.id)});
-    if(act&&isChildOf(act.id,anchor('travel').id)){
-      relField('From',atTid(),'places',{exclusive:true,
-        subject:()=>getEntry(e.id)});
-      relField('To',atTid(),'places',{exclusive:true,
-        subject:()=>endEntryOf(e.id,endsTid()),
-        ensureSubject:ensureEnd});
-    }
+    relField('With',withTid(),'person',{subject:()=>getEntry(e.id)});
+    relField('From',atTid(),'place',{exclusive:true,
+      subject:()=>getEntry(e.id)});
+    relField('To',atTid(),'place',{exclusive:true,
+      subject:()=>endEntryOf(e.id),
+      ensureSubject:ensureEnd});
+
+    const ghost=outOne(e.id,doingTid());
+    if(ghost&&hasStatus(ghost.id,'todo')){
+      const done=el('button','bigbtn','✓ task done');
+      done.addEventListener('click',()=>{
+        const en=isActive?concludeInterval(e):(endEntryOf(e.id)||null);
+        fulfillGhost(ghost.id,(en||e).id);
+        Modal.closeAll(); });
+      body.appendChild(done); }
 
     body.appendChild(el('div','f-lbl','Entries'));
     const foot=el('div','chiprow'); body.appendChild(foot);
-    const sb=el('button','chip','start entry…');
+    const sb=el('button','chip','begin entry…');
     sb.addEventListener('click',()=>openEditor(e.id)); foot.appendChild(sb);
     if(endE){ const eb=el('button','chip','end entry…');
       eb.addEventListener('click',()=>openEditor(endE.id)); foot.appendChild(eb); }
@@ -2171,54 +2178,193 @@ function pickType(onPick){
 }
 // ==== SEC:APP/UI/PICK_TYPE (END) ====
 
-// ==== SEC:APP/UI/PANEL_EXCL (BEGIN) ====
-// The swap panel: entry's title/body read-only up top; swap-view field;
-// members as chips with current membership filled. Tapping a member
-// removes this entry's links (of the tab's type) to ALL current members
-// of the swap view, then links the tapped one — self-healing exclusivity.
-function openExclusivePanel(entryId,tab){
+// ==== SEC:APP/UI/EDIT_TASK (BEGIN) ====
+// The task sheet — triage for Noted jots and the editor for ghosts,
+// one surface (they differ only in state). Fields:
+//   Title — inline; formalizing a jot usually starts with rewording.
+//   Status — `is` chips over the Status lexicon with scoped
+//   exclusivity (setIs); tapping the selected one clears it.
+//   Doing — the verb cloud (exclusive): points the task at a verb or
+//   a standing complement, after which the row reads verb-first.
+//   Object — map cloud, any number: per-moment direct objects.
+//   Parent — map cloud, exclusive by gesture with a [part of|of]
+//   mode toggle: selecting replaces the item's existing part-of/of
+//   links; `of` makes the super part of this entry's handle forever.
+//   Due — date-time picker; picking mints a bare moment AT the chosen
+//   time and links due -> it; re-picking moves the same moment; ×
+//   removes only the link.
+//   Promised to — Person cloud. Selecting someone MINTS the wrapping
+//   promise: a moment doing -> Promised (found by title among
+//   Activity members, minted if absent), recipient -> person,
+//   object -> this ghost, sharing the ghost's due link. "Plan" mints
+//   the same wrapper on Planned, with no recipient. Nothing is
+//   created silently.
+//   Done — the fulfillment gesture (design §9): re-stamp, clear
+//   To-Do, `fulfills` every wrapper.
+// The map cloud drills: ▸ re-roots on a category, ⬑ climbs back.
+function mapCloud(container,st,opts){
+  const draw=()=>{ container.innerHTML='';
+    const rootId=st.root||null;
+    if(rootId){ const upc=el('button','chip','⬑ '+handle(rootId));
+      upc.addEventListener('click',()=>{ st.root=st.trail.pop()||null; draw(); });
+      container.appendChild(upc); }
+    const kids=rootId
+      ? childrenOf(rootId,structTids())
+      : [anchor('personal'),anchor('professional')].map(a=>getEntry(a.id)).filter(Boolean);
+    const sel=opts.selected();
+    kids.sort(chipCmp).forEach(k=>{
+      const isSel=sel.has(k.id);
+      container.appendChild(entryChip(k,{cls:isSel?'sel':'',
+        onTap:()=>{ opts.onTap(k,isSel); draw(); }}));
+      const dr=el('button','chip','▸'); dr.title='Open '+handle(k);
+      dr.addEventListener('click',()=>{ st.trail=st.trail||[];
+        st.trail.push(st.root||null); st.root=k.id; draw(); });
+      container.appendChild(dr); });
+    if(rootId){ const add=el('button','chip add','＋ new…');
+      add.addEventListener('click',()=>{ const t=prompt('New entry under '+handle(rootId)+':');
+        if(t&&t.trim()){ const n=createEntry({title:t.trim()});
+          addEdge(n.id,rootId,partofTid());
+          opts.onTap(n,false); draw(); } });     // mint AND select
+      container.appendChild(add); } };
+  draw();
+  return draw; }
+function openTaskSheet(id){
   Modal.push((m,body)=>{
-    const e=getEntry(entryId);
+    const e=getEntry(id);
     if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
-    body.appendChild(el('div','f-lbl','Entry'));
-    const nm=el('button',null,disp(e));
-    nm.style.cssText='font-size:18px;font-weight:600;text-align:left;padding:2px 0';
-    nm.addEventListener('click',()=>openEditor(e.id));
-    body.appendChild(nm);
-    if(e.title&&e.body){ const b=el('div',null,e.body.slice(0,200));
-      b.style.cssText='color:var(--muted);font-size:14px;margin-top:4px'; body.appendChild(b); }
+    const isGhost=hasStatus(e.id,'todo');
 
-    body.appendChild(el('div','f-lbl','Set (exactly one)'));
-    const fieldKey='tab'+tab.id+'.swap';
-    const vrow=el('div'); body.appendChild(vrow);
-    const crow=el('div','chiprow'); crow.style.marginTop='10px'; body.appendChild(crow);
+    body.appendChild(el('div','f-lbl','Task'));
+    const top=el('div','f-toprow');
+    const ti=el('input','f-title'); ti.placeholder='Title'; ti.value=e.title||'';
+    ti.addEventListener('input',()=>updateEntry(e.id,{title:ti.value.trim()||null}));
+    top.appendChild(ti);
+    const ed=el('button','tbtn','open…'); ed.title='Full entry editor';
+    ed.addEventListener('click',()=>openEditor(e.id));
+    top.appendChild(ed);
+    body.appendChild(top);
 
-    function draw(){
-      vrow.innerHTML=''; crow.innerHTML='';
-      const swapView=Mem.get(fieldKey,tab.cfg.swap_view_id);
-      const vchip=el('button','chip','view: '+swapView.name);
-      vchip.addEventListener('click',()=>pickView(vw=>{Mem.set(fieldKey,vw.id);draw();}));
-      vrow.appendChild(vchip);
+    body.appendChild(el('div','f-lbl','Status'));
+    const srow=el('div','chiprow'); body.appendChild(srow);
+    const drawStatus=()=>{ srow.innerHTML='';
+      childrenOf(anchor('status').id,[isaTid()]).sort(chipCmp).forEach(s=>{
+        const sel=isLinkedTo(e.id,s.id,[isTid()]);
+        srow.appendChild(entryChip(s,{cls:sel?'sel':'',onTap:()=>{
+          if(sel) clearIs(e.id,s.id); else setIs(e.id,s.id);
+          Modal.refresh(); UI.rerender(); }})); }); };
+    drawStatus();
 
-      const members=[...viewMatches(swapView)].map(getEntry).filter(Boolean)
-        .sort((a,b)=>a.created_at.localeCompare(b.created_at));
-      const currentIds=new Set(parentEdgesOf(e.id)
-        .filter(x=>x.edge.type_id===tab.cfg.link_type_id).map(x=>x.node.id));
-      members.forEach(mem=>{
-        const isCur=currentIds.has(mem.id);
-        const ch=entryChip(mem,{cls:isCur?'sel':'',onTap:()=>{
-          parentEdgesOf(e.id).forEach(x=>{
-            if(x.edge.type_id===tab.cfg.link_type_id&&members.some(mm=>mm.id===x.node.id))
-              removeEdge(x.edge.id); });
-          addEdge(e.id,mem.id,tab.cfg.link_type_id);
-          toast(disp(e)+' → '+disp(mem)); draw(); }});
-        crow.appendChild(ch); });
-      if(!members.length) crow.appendChild(el('div','empty','The swap view matches nothing.'));
-    }
-    draw();
+    body.appendChild(el('div','f-lbl','Doing'));
+    const vrow=el('div','chiprow'); body.appendChild(vrow);
+    const drawDoing=()=>{ vrow.innerHTML='';
+      const cur=outOne(e.id,doingTid());
+      verbCloudItems().filter(x=>x.id!==e.id).sort(chipCmp).forEach(x=>{
+        const sel=cur&&cur.id===x.id;
+        vrow.appendChild(entryChip(x,{cls:sel?'sel':'',onTap:()=>{
+          liveEdges().forEach(g=>{ if(g.from_id===e.id&&g.type_id===doingTid())
+            removeEdge(g.id); });
+          if(!sel) addEdge(e.id,x.id,doingTid());
+          drawDoing(); }})); }); };
+    drawDoing();
+
+    body.appendChild(el('div','f-lbl','Object'));
+    const orow=el('div','chiprow'); body.appendChild(orow);
+    const ost=tabState('sheet-obj-'+e.id);
+    mapCloud(orow,ost,{
+      selected:()=>new Set(outAll(e.id,objectTid()).map(x=>x.id)),
+      onTap:(k,sel)=>{ if(sel) liveEdges().forEach(g=>{
+          if(g.from_id===e.id&&g.type_id===objectTid()&&g.to_id===k.id) removeEdge(g.id); });
+        else addEdge(e.id,k.id,objectTid()); }});
+
+    body.appendChild(el('div','f-lbl','Parent'));
+    const pmode=el('div','chiprow'); body.appendChild(pmode);
+    const prow=el('div','chiprow'); body.appendChild(prow);
+    const pst=tabState('sheet-par-'+e.id); pst.mode=pst.mode||'part of';
+    const modeChip=el('button','chip sel',pst.mode);
+    modeChip.title='Toggle link type: part of / of';
+    modeChip.addEventListener('click',()=>{
+      pst.mode=pst.mode==='part of'?'of':'part of';
+      modeChip.textContent=pst.mode; });
+    pmode.appendChild(modeChip);
+    mapCloud(prow,pst,{
+      selected:()=>new Set([...outAll(e.id,partofTid()),...outAll(e.id,ofTid())].map(x=>x.id)),
+      onTap:(k,sel)=>{
+        liveEdges().forEach(g=>{ if(g.from_id===e.id
+          &&[partofTid(),ofTid()].includes(g.type_id)) removeEdge(g.id); });
+        if(!sel) addEdge(e.id,k.id,pst.mode==='of'?ofTid():partofTid());
+        Modal.refresh(); }});
+
+    body.appendChild(el('div','f-lbl','Due'));
+    const drow=el('div','chiprow'); body.appendChild(drow);
+    const drawDue=()=>{ drow.innerHTML='';
+      const g=liveEdges().find(x=>x.from_id===e.id
+        &&x.type_id===dueTid()&&getEntry(x.to_id));
+      const dueE=g?getEntry(g.to_id):null;
+      const btn=el('button','chip'+(dueE?' sel':''),dueE?fmtDT(dueE.ts):'set due…');
+      btn.style.position='relative';
+      const inp=el('input','tsnative'); inp.type='datetime-local';
+      inp.setAttribute('tabindex','-1'); inp.setAttribute('aria-hidden','true');
+      inp.addEventListener('change',()=>{ const iso=fromLocalInput(inp.value);
+        if(!iso) return;
+        if(dueE) updateEntry(dueE.id,{ts:iso});
+        else { const d=createEntry({ts:iso}); addEdge(e.id,d.id,dueTid()); }
+        drawDue(); });
+      btn.appendChild(inp);
+      btn.addEventListener('click',()=>{
+        inp.value=toLocalInput(dueE?dueE.ts:nowISO());
+        try{ inp.showPicker?inp.showPicker():inp.focus(); }
+        catch(err){ inp.focus(); } });
+      drow.appendChild(btn);
+      if(dueE){ const x=el('button','chip','×'); x.title='Remove due';
+        x.addEventListener('click',()=>{ removeEdge(g.id); drawDue(); });
+        drow.appendChild(x); } };
+    drawDue();
+
+    // Promise wrapper. Finds-or-mints the verb by title among Activity
+    // members — Promised/Planned are the keeper's vocabulary, not seeds.
+    const verbByTitle=t=>{ let v=childrenOf(anchor('activity').id,[isaTid()])
+        .find(x=>x.title===t);
+      if(!v){ v=createEntry({title:t}); addEdge(v.id,anchor('activity').id,isaTid()); }
+      return v; };
+    const mintWrapper=(verbTitle,person)=>{
+      const w=createEntry();
+      addEdge(w.id,verbByTitle(verbTitle).id,doingTid());
+      addEdge(w.id,e.id,objectTid());
+      if(person) addEdge(w.id,person.id,recipientTid());
+      const d=outOne(e.id,dueTid());
+      if(d) addEdge(w.id,d.id,dueTid());
+      toast(verbTitle+(person?' '+oblique(person):''));
+      Modal.refresh(); };
+    body.appendChild(el('div','f-lbl','Promised to'));
+    const wrow=el('div','chiprow'); body.appendChild(wrow);
+    const wrappers=()=>backlinksOf(e.id)
+      .filter(x=>x.edge.type_id===objectTid());
+    const drawPromise=()=>{ wrow.innerHTML='';
+      const ws=wrappers();
+      ws.forEach(x=>wrow.appendChild(entryChip(x.node,{cls:'sel',
+        onTap:()=>openEditor(x.node.id)})));
+      childrenOf(anchor('person').id,[isaTid()]).sort(chipCmp).forEach(p=>{
+        wrow.appendChild(entryChip(p,{onTap:()=>mintWrapper('Promised',p)})); });
+      const plan=el('button','chip','plan (to myself)');
+      plan.addEventListener('click',()=>mintWrapper('Planned',null));
+      wrow.appendChild(plan);
+      const np=el('button','chip add','＋ person…');
+      np.addEventListener('click',()=>{ const t=prompt('New person:');
+        if(t&&t.trim()){ const p=createEntry({title:t.trim()});
+          addEdge(p.id,anchor('person').id,isaTid());
+          mintWrapper('Promised',p); } });
+      wrow.appendChild(np); };
+    drawPromise();
+
+    if(isGhost){
+      const done=el('button','bigbtn','✓ Done');
+      done.addEventListener('click',()=>{
+        const en=fulfillGhost(e.id,null);
+        Modal.closeAll(); });
+      body.appendChild(done); }
   });
 }
-// ==== SEC:APP/UI/PANEL_EXCL (END) ====
+// ==== SEC:APP/UI/EDIT_TASK (END) ====
 
 // ==== SEC:APP/UI/EDIT_VIEW (BEGIN) ====
 // name, ancestor conditions (+/×, ANDed), containment link types.
@@ -2317,17 +2463,12 @@ function openTabEditor(tabId){
             onRemove:()=>{c.def.links.splice(i,1);touch(t);save();drawDef();}})); });
         const add=el('button','chip add','＋');
         add.addEventListener('click',()=>pickEntry('tabEditor.deflink',e=>{
-          c.def.links.push({to:e.id,type:liveTypes().find(x=>x.name==='child').id});
+          c.def.links.push({to:e.id,type:isaTid()});
           touch(t); save(); drawDef(); }));
         lr.appendChild(add); }
       drawDef();
     }
     else if(t.cls==='explore'){ viewFieldCfg('Default view','view_id'); }
-    else if(t.cls==='exclusive'){
-      viewFieldCfg('List view','list_view_id');
-      viewFieldCfg('Swap view','swap_view_id');
-      typeFieldCfg('Link type','link_type_id');
-    }
   });
 }
 // ==== SEC:APP/UI/EDIT_TAB (END) ====
@@ -2473,13 +2614,9 @@ load();
 migrateIds();        // numeric -> device-prefixed global ids (one-shot)
 initCounters();      // per-device id counters, derived by scan
 seed();              // no-op unless the DB is empty
-migrateV1();         // one-shot import from the legacy store, if present
-ensureSeedTabs();    // workflow tabs newer than this store's first seed
-ensureSeedLinkTypes(); // doing/with/at on stores seeded before them
-ensureAnchors();     // Places/Travel etc. on stores seeded before them
-migrateFromTo();     // 3.2's from/to edges & types -> at (one-shot)
-retireDoneSeed();    // 3.5 unseeds Done; tombstoned when untouched
-migrateIntervalsToActive(); // 3.6: child->Intervals becomes status->Active
+ensureSeedTabs();
+ensureSeedLinkTypes(); // types newer than this store's first seed
+ensureAnchors();     // lexicon roots + statuses on stores that predate them
 UI.tabId=liveTabs()[0]?.id;
 UI.rerender();
 Sync.init();         // silent Drive sync attempt if configured
