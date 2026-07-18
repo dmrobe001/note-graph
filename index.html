@@ -190,7 +190,8 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 .flatrow{display:block;width:100%;text-align:left;padding:6px 4px;border-radius:10px}
 .flatrow:active{background:var(--surface)}
 .flatrow .line{display:flex;gap:8px;align-items:baseline}
-.flatrow .nm{font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* Flat rows wrap onto as many lines as the sentence needs. */
+.flatrow .nm{font-size:15px;white-space:normal;overflow-wrap:anywhere;min-width:0}
 /* Every flat row leads with its time (or start–end range) inline. */
 .flatrow .rng{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0}
 /* ==== SEC:STYLE/TREE (END) ==== */
@@ -337,11 +338,14 @@ function disp(e){ return e.title || (e.body||'').split('\n')[0].slice(0,60) || f
 // (body snippet or bare timestamp) are muted, plain roman, no bullet.
 function dispCls(e){ return e.title ? (e.body?'':' tonly') : ' untitled'; }
 // Chip-cloud order: seed entries first, then titled, then body-only,
-// then bare timestamps; alphabetical within each band.
+// then bare timestamps; alphabetical within each band, except bare
+// timestamps, which sort chronologically.
 function chipRank(e){ if(String(e.id).startsWith('seed-')) return 0;
   if(e.title) return 1; if(e.body) return 2; return 3; }
-function chipCmp(a,b){ return chipRank(a)-chipRank(b)
-  || disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}); }
+function chipCmp(a,b){ const ra=chipRank(a),rb=chipRank(b);
+  if(ra!==rb) return ra-rb;
+  if(ra===3) return a.ts.localeCompare(b.ts);
+  return disp(a).localeCompare(disp(b),undefined,{sensitivity:'base'}); }
 let toastTimer=null;
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.classList.remove('on'),1700); }
@@ -468,6 +472,8 @@ function addEdge(from_id,to_id,type_id){ if(from_id===to_id) return null;
 function removeEdge(id){ const d=DB.edges.find(x=>x.id===id); if(d){d.deleted=1;touch(d);save();} }
 function retypeEdge(id,type_id){ const d=DB.edges.find(x=>x.id===id&&!x.deleted);
   if(d){d.type_id=type_id;touch(d);save();} }
+function reverseEdge(id){ const d=DB.edges.find(x=>x.id===id&&!x.deleted);
+  if(d){ const f=d.from_id; d.from_id=d.to_id; d.to_id=f; touch(d); save(); } }
 const liveEdges=()=>DB.edges.filter(d=>!d.deleted);
 
 function createLinkType(name,locked=0){ const t0=nowISO();
@@ -488,6 +494,7 @@ const ANCHORS={
   personal:    {id:'seed-e-personal',    title:'Personal'},
   professional:{id:'seed-e-professional',title:'Professional'},
   i:           {id:'seed-e-i',           title:'I'},
+  project:     {id:'seed-e-project',     title:'Project'},
   active:      {id:'seed-e-active',      title:'Active',   parent:'status', edge:'seed-g-active-status'},
   todo:        {id:'seed-e-todo',        title:'To-Do',    parent:'status', edge:'seed-g-todo-status'},
   noted:       {id:'seed-e-noted',       title:'Noted',    parent:'status', edge:'seed-g-noted-status'},
@@ -589,6 +596,7 @@ function seed(){
   mkEntry('seed-e-personal','Personal');
   mkEntry('seed-e-professional','Professional');
   mkEntry('seed-e-i','I');
+  mkEntry('seed-e-project','Project');
   [['active','Active'],['todo','To-Do'],['noted','Noted'],
    ['deferred','Deferred'],['cancelled','Cancelled'],['missed','Missed']]
     .forEach(([k,t])=>{ const s=mkEntry('seed-e-'+k,t);
@@ -777,34 +785,32 @@ function outOne(id,tid){ const g=liveEdges().find(x=>x.from_id===id
 function outAll(id,tid){ return liveEdges().filter(x=>x.from_id===id&&x.type_id===tid)
   .map(x=>getEntry(x.to_id)).filter(Boolean); }
 // HANDLES (design §6). Base is disp(); an `of` link prepends its
-// target's handle (ASR/Treasurer, recursively); a bare entry (no
-// title, no body) with a doing link is named as a piece of its verb
-// (Bins/8:45). Cycle- and depth-guarded.
+// target's handle with a bare space (ASR Treasurer, recursively); a
+// bare entry (no title, no body) with a doing link is named as a
+// piece of its verb (Bins/8:45). Cycle- and depth-guarded.
 function handle(eOrId,seen){
   const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
   seen=seen||new Set();
   if(seen.has(e.id)||seen.size>6) return disp(e);
   seen.add(e.id);
   const of=outOne(e.id,ofTid());
-  if(of) return handle(of,seen)+'/'+disp(e);
+  if(of) return handle(of,seen)+' '+disp(e);
   if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
     if(d) return handle(d,seen)+'/'+disp(e); }
   return disp(e); }
 // Oblique first person: the I entry reads "me" everywhere except the
 // subject slot (where it is suppressed — absent `by` IS first person).
 function oblique(e){ return e.id===anchor('i').id?'me':handle(e); }
-// Verb-slot expansion: a doing target that `complements` a verb prints
-// the verb's phrase first, then its own handle —
-// "Accounted ASR/Annual Report/Invoices" from doing -> Invoices alone.
-// A bare TOKEN in the verb slot (a ghost: no title, no body, its own
-// doing link) collapses into the phrase of its deed — an interval on
-// the invoices ghost reads exactly as one on Invoices would.
+// Verb slot: prints the doing target's handle. The complements chain
+// is NO LONGER expanded here — interval minting now writes the real
+// doing -> verb (+ object -> noun) links, so a complementer in the
+// verb slot prints as itself alone. A bare TOKEN in the verb slot (a
+// ghost: no title, no body, its own doing link) still collapses into
+// the phrase of its deed.
 function verbPhrase(eOrId,seen){
   const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
   seen=seen||new Set(); if(seen.has(e.id)||seen.size>6) return handle(e);
   seen.add(e.id);
-  const c=outOne(e.id,complementsTid());
-  if(c) return verbPhrase(c,seen)+' '+handle(e);
   if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
     if(d) return verbPhrase(d,seen); }
   return handle(e); }
@@ -815,7 +821,9 @@ function activeIntervals(){
   return statusLinked('active').sort((a,b)=>a.ts.localeCompare(b.ts)); }
 function endEntryOf(startId){ return outOne(startId,untilTid()); }
 function intervalLabel(e){ const a=outOne(e.id,doingTid());
-  return a?verbPhrase(a):disp(e); }
+  const objs=outAll(e.id,objectTid());
+  const base=a?verbPhrase(a):disp(e);
+  return objs.length?base+' '+objs.map(handle).join(', '):base; }
 // GHOSTS & FULFILLMENT (design §9). A ghost is any entry `is` -> To-Do.
 // Fulfilling: re-stamp to the completion moment, drop the To-Do state,
 // and point `fulfills` at every wrapper (any moment whose `object` is
@@ -1433,6 +1441,49 @@ function entryChip(e,{onTap,onRemove,typeLabel,onTypeTap,cls}={}){
     x.addEventListener('click',ev=>{ev.stopPropagation();onRemove();}); c.appendChild(x); }
   if(onTap) c.addEventListener('click',onTap);
   return c; }
+// EXPANDABLE CHIP CLOUDS. Clouds start restricted to a top-level
+// lexicon; a chip whose entry has incoming links of opts.expandTids
+// (default opts.childTids) earns a ＋ that dismisses the cloud and
+// repopulates it with everything linking to that entry via
+// opts.childTids; ⬑ climbs back out. st carries {root, trail, meta}
+// across repaints; meta is caller-defined per-level baggage
+// (opts.onExpand(entry, prevRootId, prevMeta) -> new meta).
+//   top()                       entries of the unexpanded cloud
+//   childTids                   incoming link types populating a level
+//   expandTids                  incoming link types earning a ＋
+//   noExpand(e)                 suppress the ＋ for this chip
+//   filter(list)                per-draw list transform (search etc.)
+//   renderChip(container,e,rootId,draw)  append the chip itself
+//   extras(container,rootId,draw)        trailing adders etc.
+//   emptyMsg                    string or () => string
+function expandableCloud(container,st,opts){
+  st.trail=st.trail||[];
+  const draw=()=>{ container.innerHTML='';
+    const rootId=st.root||null;
+    if(rootId){ const up=el('button','chip','⬑ '+handle(rootId));
+      up.addEventListener('click',()=>{ const prev=st.trail.pop()||{};
+        st.root=prev.root||null; st.meta=prev.meta||null; draw(); });
+      container.appendChild(up); }
+    let items=rootId?childrenOf(rootId,opts.childTids||[]):opts.top();
+    const seen=new Set(); items=items.filter(x=>x&&!seen.has(x.id)&&seen.add(x.id));
+    if(opts.filter) items=opts.filter(items);
+    items.sort(chipCmp).forEach(x=>{
+      opts.renderChip(container,x,rootId,draw);
+      const canExpand=!(opts.noExpand&&opts.noExpand(x))
+        &&childrenOf(x.id,opts.expandTids||opts.childTids||[]).length>0;
+      if(canExpand){
+        const plus=el('button','chip add','＋');
+        plus.title='Show what links to '+handle(x);
+        plus.addEventListener('click',()=>{
+          st.trail.push({root:st.root||null,meta:st.meta||null});
+          if(opts.onExpand) st.meta=opts.onExpand(x,rootId,st.meta);
+          st.root=x.id; draw(); });
+        container.appendChild(plus); } });
+    if(!items.length&&opts.emptyMsg)
+      container.appendChild(el('span','empty slim',
+        typeof opts.emptyMsg==='function'?opts.emptyMsg():opts.emptyMsg));
+    if(opts.extras) opts.extras(container,rootId,draw); };
+  draw(); return draw; }
 // links field: existing typed links as chips + a "link…" adder that runs
 // picker (view remembered per fieldKey) then applies the field's
 // remembered link type silently; tap the type label on a chip to retype.
@@ -1442,7 +1493,8 @@ function linksField(container,entryId,fieldKey,afterChange){
     wrap.appendChild(entryChip(node,{cls:'linked',
       typeLabel:type.name,
       onTypeTap:()=>pickType(t=>{retypeEdge(edge.id,t.id);
-        DB.settings.mem[fieldKey+'.type']=t.id; save(); afterChange();}),
+        DB.settings.mem[fieldKey+'.type']=t.id; save(); afterChange();},
+        {onReverse:()=>{reverseEdge(edge.id);afterChange();}}),
       onRemove:()=>{removeEdge(edge.id);afterChange();},
       onTap:()=>openEditor(node.id)})); });
   const add=el('button','chip add','⌕ link…');
@@ -1617,14 +1669,22 @@ function renderInbox(v,tab){
 // and a begin entry that is simply never marked Active (an
 // inauguration, a years-long role) clocks nowhere — legitimately
 // unended. Rows are running clocks wearing their verb phrase; tapping
-// one opens the interval sheet. The VERB CLOUD below offers, per
-// design §8: `is a` members of Activity, everything reaching one
-// through a chain of `complements` links, every ghost (To-Do), and
-// every Noted entry — an open task or a standing complement is one
-// tap from a running clock. Typing filters; the ancestor match walks
-// complements / of / is a upward, so "asr" keeps ASR/…/Invoices. ＋
-// mints a titled `is a` member of Activity from the field text and
-// starts it at once.
+// one opens the interval sheet. The CHIP CLOUD below offers only
+// direct `is a` members of Activity, plus everything `is` -> To-Do or
+// `is` -> Noted. A chip with incoming `part of` / `of` links grows a
+// ＋ that dismisses the cloud and repopulates it with everything
+// linking to that chip via part of / of / is a / complements (⬑
+// climbs back). SELECTION: if the expansion path used to reach the
+// tapped chip crossed a `complements` link, or the tapped entry has
+// exactly one outgoing `complements` link, the interval is minted
+// doing -> that complements target with object -> the tapped entry;
+// otherwise doing -> the tapped entry. A chip whose entry has exactly
+// one INCOMING `complements` link wears its source's title inline,
+// needs no ＋, and taps as that source (doing -> the chip's entry,
+// object -> the source). Typing filters the current level; the
+// ancestor match walks complements / of / is a upward, so "asr" keeps
+// ASR/…/Invoices. ＋ by the field mints a titled `is a` member of
+// Activity and starts it at once.
 function concludeInterval(e){
   let en=endEntryOf(e.id);
   if(en) updateEntry(en.id,{ts:nowISO()});
@@ -1635,13 +1695,7 @@ function concludeInterval(e){
 function verbCloudItems(){
   const seen=new Set(), out=[];
   const add=e=>{ if(e&&!seen.has(e.id)){ seen.add(e.id); out.push(e); } };
-  const verbs=childrenOf(anchor('activity').id,[isaTid()]);
-  verbs.forEach(add);
-  const bfs=verbs.map(v=>v.id), cm=complementsTid();
-  while(bfs.length){ const cur=bfs.pop();
-    liveEdges().forEach(g=>{ if(g.type_id===cm&&g.to_id===cur){
-      const e=getEntry(g.from_id);
-      if(e&&!seen.has(e.id)){ add(e); bfs.push(e.id); } } }); }
+  childrenOf(anchor('activity').id,[isaTid()]).forEach(add);
   statusLinked('todo').forEach(add);
   statusLinked('noted').forEach(add);
   return out; }
@@ -1660,8 +1714,9 @@ function renderActive(v,tab){
     end.addEventListener('click',()=>{ concludeInterval(e); UI.rerender(); });
     row.appendChild(end);
     v.appendChild(row); });
-  const begin=a=>{ const e=createEntry();
-    addEdge(e.id,a.id,doingTid());
+  const begin=(a,comp)=>{ const e=createEntry();
+    if(comp){ addEdge(e.id,comp.id,doingTid()); addEdge(e.id,a.id,objectTid()); }
+    else addEdge(e.id,a.id,doingTid());
     addEdge(e.id,anchor('active').id,isTid()); };
   const row=el('div','f-toprow');
   const f=el('input','f-title'); f.placeholder='Start…'; f.value=st.q||'';
@@ -1673,30 +1728,52 @@ function renderActive(v,tab){
   row.appendChild(plus);
   v.appendChild(row);
   const cloud=el('div','chipcloud'); v.appendChild(cloud);
+  st.cloud=st.cloud||{trail:[]};
+  const cm=complementsTid();
+  const compEdge=(fromId,toId)=>liveEdges().some(g=>g.type_id===cm
+    &&g.from_id===fromId&&g.to_id===toId);
+  const soleIncomingComp=x=>{ const es=liveEdges().filter(g=>g.type_id===cm
+      &&g.to_id===x.id&&getEntry(g.from_id));
+    return es.length===1?getEntry(es[0].from_id):null; };
+  const soleOutgoingComp=x=>{ const es=liveEdges().filter(g=>g.type_id===cm
+      &&g.from_id===x.id&&getEntry(g.to_id));
+    return es.length===1?getEntry(es[0].to_id):null; };
   const up=id=>liveEdges().filter(g=>g.from_id===id
       &&[complementsTid(),ofTid(),isaTid(),partofTid()].includes(g.type_id))
     .map(g=>g.to_id);
-  function paint(){
-    cloud.innerHTML='';
-    let items=verbCloudItems();
-    const q=(st.q||'').trim();
-    if(q){ const memo=new Map();
-      const ok=id=>{ if(memo.has(id)) return memo.get(id);
-        memo.set(id,false);                          // cycle guard
-        const e=getEntry(id); if(!e) return false;
-        let m=fuzzy(q,e.title?e.title:(e.body||''))>=0;
-        if(!m) m=up(id).some(ok);
-        memo.set(id,m); return m; };
-      items=items.filter(e=>ok(e.id)); }
-    items.sort(chipCmp).forEach(e=>{
-      const c=el('button','chip'+(e.title?'':' untitled'),handle(e));
-      c.addEventListener('click',()=>{ begin(e); st.q='';
-        toast('Started · '+handle(e)); UI.rerender(); });
-      cloud.appendChild(c); });
-    if(!items.length) cloud.appendChild(el('div','empty slim',
-      q?'No matches.':'No verbs yet — type one and ＋.')); }
-  f.addEventListener('input',()=>{ st.q=f.value; paint(); });
-  paint();
+  const searchFilter=items=>{
+    const q=(st.q||'').trim(); if(!q) return items;
+    const memo=new Map();
+    const ok=id=>{ if(memo.has(id)) return memo.get(id);
+      memo.set(id,false);                          // cycle guard
+      const e=getEntry(id); if(!e) return false;
+      let m=fuzzy(q,e.title?e.title:(e.body||''))>=0;
+      if(!m) m=up(id).some(ok);
+      memo.set(id,m); return m; };
+    return items.filter(e=>ok(e.id)); };
+  const start=(a,comp)=>{ begin(a,comp); st.q=''; st.cloud={trail:[]};
+    toast('Started · '+(comp?handle(comp)+' ':'')+handle(a)); UI.rerender(); };
+  const drawCloud=expandableCloud(cloud,st.cloud,{
+    top:verbCloudItems,
+    childTids:[partofTid(),ofTid(),isaTid(),complementsTid()],
+    expandTids:[partofTid(),ofTid()],
+    noExpand:x=>!!soleIncomingComp(x),
+    filter:searchFilter,
+    onExpand:(x,rootId,meta)=>(rootId&&compEdge(x.id,rootId))?rootId:meta,
+    renderChip:(rw,x,rootId)=>{
+      const S=soleIncomingComp(x);
+      const label=S?handle(x)+' '+(S.title||disp(S)):handle(x);
+      const c=el('button','chip'+((x.title||S)?'':' untitled'),label);
+      c.addEventListener('click',()=>{
+        if(S){ start(S,x); return; }               // path: S -complements-> x
+        let comp=null;
+        if(rootId&&compEdge(x.id,rootId)) comp=getEntry(rootId);
+        if(!comp&&st.cloud.meta) comp=getEntry(st.cloud.meta);
+        if(!comp) comp=soleOutgoingComp(x);
+        start(x,comp); });
+      rw.appendChild(c); },
+    emptyMsg:()=>((st.q||'').trim()?'No matches.':'No verbs yet — type one and ＋.')});
+  f.addEventListener('input',()=>{ st.q=f.value; drawCloud(); });
   f.setAttribute('autofocus','');
   f.focus(); setTimeout(()=>{ if(document.activeElement!==f) f.focus(); },250);
 }
@@ -1738,19 +1815,29 @@ function renderExplore(v,tab){
       if(st.q&&st.q.trim())
         list=list.filter(e=>fuzzy(st.q.trim(),e.title?e.title:(e.body||''))>=0);
       // THE DISPLAY GRAMMAR (design §12). Every flat row is one
-      // continuous line: a time lead, then the entry's sentence read
-      // off its outgoing clauses in a fixed order —
-      //   [subject] verb-phrase [recipients] [objects] [complements]
-      //   [is X] [is a X] [part of X] [of X] [complements X]
+      // sentence, wrapping as needed: a time lead, then any Status
+      // states (`is` links whose target `is a` Status) colon-
+      // terminated, then the sentence read off its outgoing clauses —
+      //   [Status:] [subject] verb-phrase [recipients] [objects]
+      //   [complements] — then the link clauses, joined by "and" —
+      //   [is X] [is a X] [is part of X] [of X] [complements X]
       //   [with …] [at …|from X to Y] [for …] [due <t>] [fulfills …]
-      //   : title / body [/ end title / end body]
+      //   : title [/ end title] . body [/ end body]
+      // Bodies come after every title and link clause, with a '.'
+      // closing the sentence before them. A titled entry with no
+      // `doing` link and no Status state is led by "Articulated that".
+      // ABSORPTION: exactly one `complements` and/or one `of` link is
+      // absorbed into the printed title — complemented phrase, then
+      // origin handle, then the title, bare-space-joined ("To-Do:
+      // Submitted basket weaving grant") — and prints no clause of its
+      // own; plural links print as clauses as usual.
       // An entry with an `until` target that is NOT Active is an
       // interval pair: lead becomes the begin–end range, the end
       // entry's own row is suppressed, from/to are the begin and end
       // entries' single `at` links, and the end's title/body trail the
       // begin's. `:` and `/` print only between two non-empty pieces;
       // `by` is suppressed for the first person; `of` shapes handles
-      // everywhere and additionally prints as a clause on its own row.
+      // everywhere and additionally prints as a clause when plural.
       const untilT=untilTid(), activeId=anchor('active').id, isT=isTid();
       const beg=new Map();                    // begin id -> end entry
       list.forEach(e=>{ if(hasStatus(e.id,'active')) return;
@@ -1774,10 +1861,20 @@ function renderExplore(v,tab){
         const subj=outOne(e.id,byTid());
         if(subj&&subj.id!==iId) hdr.push(handle(subj));
         const verb=outOne(e.id,doingTid());
+        // Absorption: a single complements / of link prefixes the
+        // title (complemented phrase, then origin handle) instead of
+        // printing as a clause.
+        const compLinks=outAll(e.id,complementsTid());
+        const ofLinks=outAll(e.id,ofTid());
+        const oneComp=compLinks.length===1?compLinks[0]:null;
+        const oneOf=ofLinks.length===1?ofLinks[0]:null;
+        const titleText=[oneComp?verbPhrase(oneComp):'',
+                         oneOf?handle(oneOf):'',
+                         e.title||''].filter(Boolean).join(' ');
         // A verbless entry is its own subject noun: the title leads
-        // ("Annual Report part of ASR/Treasurer"); with a verb, the
+        // ("Annual Report is part of ASR/Treasurer"); with a verb, the
         // title is trailing commentary after ':'.
-        if(!verb&&e.title) hdr.push(e.title);
+        if(!verb&&titleText) hdr.push(titleText);
         if(verb) hdr.push(verbPhrase(verb));
         const recs=outAll(e.id,recipientTid());
         if(recs.length) hdr.push(recs.map(oblique).join(', '));
@@ -1785,34 +1882,47 @@ function renderExplore(v,tab){
         if(objs.length) hdr.push(objs.map(handle).join(', '));
         const comps=outAll(e.id,complementTid());
         if(comps.length) hdr.push(comps.map(handle).join(', '));
-        outAll(e.id,isT).forEach(t=>hdr.push('is '+handle(t)));
-        outAll(e.id,isaTid()).forEach(t=>hdr.push('is a '+handle(t)));
-        outAll(e.id,partofTid()).forEach(t=>hdr.push('part of '+handle(t)));
-        outAll(e.id,ofTid()).forEach(t=>hdr.push('of '+handle(t)));
-        outAll(e.id,complementsTid()).forEach(t=>hdr.push('complements '+handle(t)));
+        // Statuses lead the row, colon-terminated; every other link
+        // printout joins the clause list, "and"-separated.
+        const statusRoot=anchor('status').id;
+        const isLinks=outAll(e.id,isT);
+        const stats=isLinks.filter(t=>isLinkedTo(t.id,statusRoot,[isaTid()]));
+        const clauses=[];
+        isLinks.filter(t=>!stats.includes(t))
+          .forEach(t=>clauses.push('is '+handle(t)));
+        outAll(e.id,isaTid()).forEach(t=>clauses.push('is a '+handle(t)));
+        outAll(e.id,partofTid()).forEach(t=>clauses.push('is part of '+handle(t)));
+        if(!oneOf) ofLinks.forEach(t=>clauses.push('of '+handle(t)));
+        if(!oneComp) compLinks.forEach(t=>clauses.push('complements '+handle(t)));
         const withs=outAll(e.id,withTid());
-        if(withs.length) hdr.push('with '+withs.map(oblique).join(', '));
+        if(withs.length) clauses.push('with '+withs.map(oblique).join(', '));
         if(endE){
           const from=outAll(e.id,atTid()), to=outAll(endE.id,atTid());
-          if(from.length===1) hdr.push('from '+handle(from[0]));
-          else if(from.length) hdr.push('at '+from.map(handle).join(', '));
-          if(to.length===1) hdr.push('to '+handle(to[0]));
-          else if(to.length) hdr.push('at '+to.map(handle).join(', '));
+          const loc=[];
+          if(from.length===1) loc.push('from '+handle(from[0]));
+          else if(from.length) loc.push('at '+from.map(handle).join(', '));
+          if(to.length===1) loc.push('to '+handle(to[0]));
+          else if(to.length) loc.push('at '+to.map(handle).join(', '));
+          if(loc.length) clauses.push(loc.join(' '));  // from/to is one clause
         } else {
           const ats=outAll(e.id,atTid());
-          if(ats.length) hdr.push('at '+ats.map(handle).join(', '));
+          if(ats.length) clauses.push('at '+ats.map(handle).join(', '));
         }
         const bens=outAll(e.id,beneficiaryTid());
-        if(bens.length) hdr.push('for '+bens.map(oblique).join(', '));
+        if(bens.length) clauses.push('for '+bens.map(oblique).join(', '));
         const dues=outAll(e.id,dueTid());
-        if(dues.length) hdr.push('due '+dues.map(d=>fmtDT(d.ts)).join(', '));
+        if(dues.length) clauses.push('due '+dues.map(d=>fmtDT(d.ts)).join(', '));
         const fuls=[...outAll(e.id,fulfillsTid()),
                     ...(endE?outAll(endE.id,fulfillsTid()):[])];
-        if(fuls.length) hdr.push('fulfills '+fuls.map(handle).join(', '));
-        let txt=hdr.join(' ');
-        const pieces=[[': ',verb?e.title:''],[' / ',first(e.body)]];
-        if(endE){ pieces.push([' / ',endE.title],[' / ',first(endE.body)]); }
-        pieces.forEach(([sep,val])=>{ if(val) txt+=(txt?sep:'')+val; });
+        if(fuls.length) clauses.push('fulfills '+fuls.map(handle).join(', '));
+        let txt=[hdr.join(' '),clauses.join(' and ')].filter(Boolean).join(' ');
+        if(verb&&titleText) txt+=(txt?': ':'')+titleText;
+        if(endE&&endE.title) txt+=(txt?' / ':'')+endE.title;
+        // Bodies trail everything; a '.' closes the sentence first.
+        const bodies=[first(e.body),endE?first(endE.body):''].filter(Boolean);
+        if(bodies.length) txt=(txt?txt+'. ':'')+bodies.join(' / ');
+        if(stats.length) txt=stats.map(handle).join(', ')+(txt?': '+txt:'');
+        else if(e.title&&!verb) txt='Articulated that '+txt;
         line.appendChild(el('span','rng',lead));
         line.appendChild(el('span','nm',txt));
         r.appendChild(line);
@@ -1831,7 +1941,8 @@ function renderExplore(v,tab){
 // "☑" — the ghosts. All and only entries `is` -> To-Do, due time on
 // the right (overdue in red). The top field + ＋ mints a ghost
 // {title, is -> To-Do} and opens the task sheet for its optional
-// clauses. Tapping a row reopens the same sheet.
+// clauses. Tapping a row reopens the same sheet; tapping the ☐ tick
+// box beside it runs the fulfillment gesture.
 function renderTodo(v,tab){
   const st=tabState(tab.id);
   const row=el('div','f-toprow');
@@ -1851,11 +1962,16 @@ function renderTodo(v,tab){
   const now=nowISO();
   list.forEach(e=>{
     const r=el('div','trow');
-    r.appendChild(el('span','chev','☐'));
+    const tick=el('button','chev','☐'); tick.title='Done';
+    tick.addEventListener('click',()=>{ fulfillGhost(e.id,null); UI.rerender(); });
+    r.appendChild(tick);
     const nm=el('button','nm'+dispCls(e),handle(e)); nm.style.textAlign='left';
     nm.addEventListener('click',()=>openTaskSheet(e.id));
     r.appendChild(nm);
-    const d=outOne(e.id,dueTid());
+    // The due clause may live on the ghost or on its promise wrapper.
+    const d=outOne(e.id,dueTid())
+      ||backlinksOf(e.id).filter(x=>x.edge.type_id===objectTid())
+        .map(x=>outOne(x.node.id,dueTid())).find(Boolean)||null;
     if(d){ const c=el('span','cnt','due '+fmtDT(d.ts));
       if(d.ts<now) c.style.color='var(--red)';
       r.appendChild(c); }
@@ -1964,8 +2080,12 @@ function openEditor(entryId){
     if(bl.length){
       body.appendChild(el('div','f-lbl','Linked from ('+bl.length+')'));
       const row=el('div','chiprow');
-      bl.slice(0,20).forEach(({node,type})=>
-        row.appendChild(entryChip(node,{typeLabel:type.name,onTap:()=>openEditor(node.id)})));
+      bl.slice(0,20).forEach(({edge,node,type})=>
+        row.appendChild(entryChip(node,{typeLabel:type.name,
+          onTypeTap:()=>pickType(t=>{retypeEdge(edge.id,t.id);Modal.refresh();},
+            {onReverse:()=>{reverseEdge(edge.id);Modal.refresh();}}),
+          onRemove:()=>{removeEdge(edge.id);Modal.refresh();},
+          onTap:()=>openEditor(node.id)})));
       body.appendChild(row); }
 
     const del=el('button','dangerbtn','Delete entry');
@@ -1980,16 +2100,20 @@ function openEditor(entryId){
 // The interval sheet — what tapping an interval opens (active rows on
 // the 🕓 tab, interval rows in explore). Header: verb phrase, then
 // active/concluded timing. Fields:
-//   With — Person cloud, any number of `with` edges from the begin.
+//   With — Person cloud, any number of `with` edges from the begin;
+//   person chips with incoming `part of` / `of` links are expandable
+//   along those links.
 //   From / To — Place cloud, exactly-one by gesture; both are `at`
-//   edges (From on the begin entry, To on the end entry). Offered for
-//   EVERY interval — locations are universal clauses. Selecting a To
-//   place with no end entry yet PRE-CREATES it (begin -until-> end,
+//   edges (From on the begin entry, To on the end entry). Offered
+//   only when the interval's doing target `is a` Travel (found by
+//   title); every other interval gets a single At field (`at` on the
+//   begin entry) — one moment, one place. Selecting a To place with
+//   no end entry yet PRE-CREATES it (begin -until-> end,
 //   provisionally timestamped) to hold the planned destination; the
 //   interval stays active until "end now" re-stamps it.
-//   task done — shown when the interval's doing target is a ghost:
-//   runs the fulfillment gesture from this interval's end entry
-//   (concluding first if still active).
+//   task done — shown when the interval's doing or object target is
+//   a ghost: runs the fulfillment gesture from this interval's end
+//   entry (concluding first if still active).
 function openIntervalEditor(startId){
   Modal.push((m,body)=>{
     const e=getEntry(startId);
@@ -2010,6 +2134,14 @@ function openIntervalEditor(startId){
     when.style.cssText='color:var(--muted);font-family:var(--mono);font-size:12px;margin-top:2px';
     body.appendChild(when);
 
+    // "end now" — the 🕓 tab's gesture, offered in the sheet too; the
+    // sheet stays open and repaints as a concluded interval.
+    if(isActive){
+      const endBtn=el('button','bigbtn','end now');
+      endBtn.addEventListener('click',()=>{
+        concludeInterval(getEntry(e.id)); UI.rerender(); Modal.refresh(); });
+      body.appendChild(endBtn); }
+
     const ensureEnd=()=>{
       const en=createEntry(); addEdge(e.id,en.id,untilTid());
       UI.rerender(); return en; };
@@ -2017,44 +2149,59 @@ function openIntervalEditor(startId){
     // A relation field: chips over an `is a` lexicon; selection = an
     // edge of typeId from opts.subject() — which may not exist yet
     // (To on a running interval), in which case opts.ensureSubject()
-    // pre-creates the end entry.
+    // pre-creates the end entry. opts.expandTids makes chips with
+    // incoming links of those types expandable.
     const relField=(label,typeId,rootKey,opts)=>{
       body.appendChild(el('div','f-lbl',label));
       const row=el('div','chiprow'); body.appendChild(row);
+      const root=anchor(rootKey);
       const cur=()=>{ const s=opts.subject(); return s
         ? liveEdges().filter(g=>g.from_id===s.id&&g.type_id===typeId) : []; };
-      const draw=()=>{ row.innerHTML='';
-        const root=anchor(rootKey);
-        const curIds=new Set(cur().map(g=>g.to_id));
-        const kids=childrenOf(root.id,[isaTid()]).sort(chipCmp);
-        const select=p=>{ const s=opts.subject()||opts.ensureSubject();
-          if(opts.exclusive) cur().forEach(g=>removeEdge(g.id));
-          addEdge(s.id,p.id,typeId); Modal.refresh(); };
-        kids.forEach(p=>{
-          const sel=curIds.has(p.id);
-          row.appendChild(entryChip(p,{cls:sel?'sel':'',onTap:()=>{
+      const select=p=>{ const s=opts.subject()||opts.ensureSubject();
+        if(opts.exclusive) cur().forEach(g=>removeEdge(g.id));
+        addEdge(s.id,p.id,typeId); Modal.refresh(); };
+      const cst=tabState('int-'+label+'-'+e.id);
+      expandableCloud(row,cst,{
+        top:()=>childrenOf(root.id,[isaTid()]),
+        childTids:opts.expandTids||[],
+        renderChip:(rw,p)=>{
+          const sel=cur().some(g=>g.to_id===p.id);
+          rw.appendChild(entryChip(p,{cls:sel?'sel':'',onTap:()=>{
             if(sel){ cur().forEach(g=>{ if(g.to_id===p.id) removeEdge(g.id); });
               Modal.refresh(); }
-            else select(p); }})); });
-        const add=el('button','chip add','＋ new…');
-        add.addEventListener('click',()=>{
-          const t=prompt('New '+handle(root)+':');
-          if(t&&t.trim()){ const n=createEntry({title:t.trim()});
-            addEdge(n.id,root.id,isaTid()); select(n); } });
-        row.appendChild(add);
-        if(!kids.length&&!curIds.size)
-          row.appendChild(el('span','empty slim','No '+handle(root)+' yet — ＋ to add.')); };
-      draw(); };
+            else select(p); }})); },
+        extras:(rw,rootId)=>{ if(rootId) return;
+          const add=el('button','chip add','＋ new…');
+          add.addEventListener('click',()=>{
+            const t=prompt('New '+handle(root)+':');
+            if(t&&t.trim()){ const n=createEntry({title:t.trim()});
+              addEdge(n.id,root.id,isaTid()); select(n); } });
+          rw.appendChild(add);
+          if(!childrenOf(root.id,[isaTid()]).length&&!cur().length)
+            rw.appendChild(el('span','empty slim','No '+handle(root)+' yet — ＋ to add.')); }
+      }); };
 
-    relField('With',withTid(),'person',{subject:()=>getEntry(e.id)});
-    relField('From',atTid(),'place',{exclusive:true,
-      subject:()=>getEntry(e.id)});
-    relField('To',atTid(),'place',{exclusive:true,
-      subject:()=>endEntryOf(e.id),
-      ensureSubject:ensureEnd});
+    relField('With',withTid(),'person',{subject:()=>getEntry(e.id),
+      expandTids:[partofTid(),ofTid()]});
+    // From/To only when the deed `is a` Travel (found by title);
+    // everything else is at one place.
+    const act=outOne(e.id,doingTid());
+    const travelE=DB.entries.find(x=>!x.deleted&&x.title
+      &&x.title.toLowerCase()==='travel');
+    if(act&&travelE&&isLinkedTo(act.id,travelE.id,[isaTid()])){
+      relField('From',atTid(),'place',{exclusive:true,
+        subject:()=>getEntry(e.id)});
+      relField('To',atTid(),'place',{exclusive:true,
+        subject:()=>endEntryOf(e.id),
+        ensureSubject:ensureEnd});
+    } else {
+      relField('At',atTid(),'place',{exclusive:true,
+        subject:()=>getEntry(e.id)});
+    }
 
-    const ghost=outOne(e.id,doingTid());
-    if(ghost&&hasStatus(ghost.id,'todo')){
+    const ghost=[outOne(e.id,doingTid()),...outAll(e.id,objectTid())]
+      .find(x=>x&&hasStatus(x.id,'todo'));
+    if(ghost){
       const done=el('button','bigbtn','✓ task done');
       done.addEventListener('click',()=>{
         const en=isActive?concludeInterval(e):(endEntryOf(e.id)||null);
@@ -2068,6 +2215,15 @@ function openIntervalEditor(startId){
     sb.addEventListener('click',()=>openEditor(e.id)); foot.appendChild(sb);
     if(endE){ const eb=el('button','chip','end entry…');
       eb.addEventListener('click',()=>openEditor(endE.id)); foot.appendChild(eb); }
+
+    const del=el('button','dangerbtn','Delete start and end');
+    del.addEventListener('click',()=>{
+      if(confirm('Delete the begin'+(endE?' and end entries':' entry')
+          +'? (soft delete; links detach)')){
+        if(endE) deleteEntry(endE.id);
+        deleteEntry(e.id);
+        Modal.pop(); } });
+    body.appendChild(del);
   });
 }
 // ==== SEC:APP/UI/EDIT_INTERVAL (END) ====
@@ -2166,7 +2322,9 @@ function pickView(onPick){
 // ==== SEC:APP/UI/PICK_VIEW (END) ====
 
 // ==== SEC:APP/UI/PICK_TYPE (BEGIN) ====
-function pickType(onPick){
+// opts.onReverse, when given, adds a "reverse" row that flips the
+// edge's direction instead of retyping it.
+function pickType(onPick,opts={}){
   Modal.push((m,body)=>{
     body.appendChild(el('div','f-lbl','Link type'));
     liveTypes().forEach(t=>{
@@ -2174,6 +2332,11 @@ function pickType(onPick){
       r.appendChild(el('span','nm',t.name));
       r.addEventListener('click',()=>{onPick(t);Modal.pop();});   // callback first: pop() re-renders the stack from data
       body.appendChild(r); });
+    if(opts.onReverse){
+      const r=el('button','cfg-row');
+      r.appendChild(el('span','nm','⇄ reverse'));
+      r.addEventListener('click',()=>{opts.onReverse();Modal.pop();});
+      body.appendChild(r); }
   });
 }
 // ==== SEC:APP/UI/PICK_TYPE (END) ====
@@ -2184,55 +2347,29 @@ function pickType(onPick){
 //   Title — inline; formalizing a jot usually starts with rewording.
 //   Status — `is` chips over the Status lexicon with scoped
 //   exclusivity (setIs); tapping the selected one clears it.
-//   Doing — the verb cloud (exclusive): points the task at a verb or
-//   a standing complement, after which the row reads verb-first.
-//   Object — map cloud, any number: per-moment direct objects.
-//   Parent — map cloud, exclusive by gesture with a [part of|of]
-//   mode toggle: selecting replaces the item's existing part-of/of
-//   links; `of` makes the super part of this entry's handle forever.
+//   Complements — `is a` members of Activity (exclusive), expandable
+//   only along `is a` links: declares the task's verb via
+//   `complements`, after which the row reads verb-first.
+//   Project — `is a` members of Project, expandable along `part of` /
+//   `of` links, exclusive by gesture with a [part of|of] mode toggle:
+//   selecting replaces the item's existing part-of/of links; `of`
+//   makes the super part of this entry's handle forever.
 //   Due — date-time picker; picking mints a bare moment AT the chosen
-//   time and links due -> it; re-picking moves the same moment; ×
-//   removes only the link.
+//   time and links due -> it FROM THE PROMISE when a wrapper exists
+//   (the deadline is the promise's clause), else from the to-do
+//   itself; re-picking moves the same moment; × removes only the
+//   link. Minting a wrapper migrates a to-do-borne due link onto it.
 //   Promised to — Person cloud. Selecting someone MINTS the wrapping
 //   promise: a moment doing -> Promised (found by title among
 //   Activity members, minted if absent), recipient -> person,
-//   object -> this ghost, sharing the ghost's due link. "Plan" mints
-//   the same wrapper on Planned, with no recipient. Nothing is
+//   object -> this ghost, taking over the ghost's due link. "Plan"
+//   mints the same wrapper on Planned, with no recipient. Nothing is
 //   created silently.
-//   Done — the fulfillment gesture (design §9): re-stamp, clear
-//   To-Do, `fulfills` every wrapper.
-// The map cloud drills: ▸ re-roots on a category, ⬑ climbs back.
-function mapCloud(container,st,opts){
-  const draw=()=>{ container.innerHTML='';
-    const rootId=st.root||null;
-    if(rootId){ const upc=el('button','chip','⬑ '+handle(rootId));
-      upc.addEventListener('click',()=>{ st.root=st.trail.pop()||null; draw(); });
-      container.appendChild(upc); }
-    const kids=rootId
-      ? childrenOf(rootId,structTids())
-      : [anchor('personal'),anchor('professional')].map(a=>getEntry(a.id)).filter(Boolean);
-    const sel=opts.selected();
-    kids.sort(chipCmp).forEach(k=>{
-      const isSel=sel.has(k.id);
-      container.appendChild(entryChip(k,{cls:isSel?'sel':'',
-        onTap:()=>{ opts.onTap(k,isSel); draw(); }}));
-      const dr=el('button','chip','▸'); dr.title='Open '+handle(k);
-      dr.addEventListener('click',()=>{ st.trail=st.trail||[];
-        st.trail.push(st.root||null); st.root=k.id; draw(); });
-      container.appendChild(dr); });
-    if(rootId){ const add=el('button','chip add','＋ new…');
-      add.addEventListener('click',()=>{ const t=prompt('New entry under '+handle(rootId)+':');
-        if(t&&t.trim()){ const n=createEntry({title:t.trim()});
-          addEdge(n.id,rootId,partofTid());
-          opts.onTap(n,false); draw(); } });     // mint AND select
-      container.appendChild(add); } };
-  draw();
-  return draw; }
+// Fulfillment is the ☑ tab's tick box, not a sheet button.
 function openTaskSheet(id){
   Modal.push((m,body)=>{
     const e=getEntry(id);
     if(!e){ body.appendChild(el('div','empty','Entry was deleted.')); return; }
-    const isGhost=hasStatus(e.id,'todo');
 
     body.appendChild(el('div','f-lbl','Task'));
     const top=el('div','f-toprow');
@@ -2254,50 +2391,67 @@ function openTaskSheet(id){
           Modal.refresh(); UI.rerender(); }})); }); };
     drawStatus();
 
-    body.appendChild(el('div','f-lbl','Doing'));
+    body.appendChild(el('div','f-lbl','Complements'));
     const vrow=el('div','chiprow'); body.appendChild(vrow);
-    const drawDoing=()=>{ vrow.innerHTML='';
-      const cur=outOne(e.id,doingTid());
-      verbCloudItems().filter(x=>x.id!==e.id).sort(chipCmp).forEach(x=>{
+    const cst=tabState('sheet-comp-'+e.id);
+    expandableCloud(vrow,cst,{
+      top:()=>childrenOf(anchor('activity').id,[isaTid()]),
+      childTids:[isaTid()],
+      filter:list=>list.filter(x=>x.id!==e.id),
+      renderChip:(rw,x)=>{
+        const cur=outOne(e.id,complementsTid());
         const sel=cur&&cur.id===x.id;
-        vrow.appendChild(entryChip(x,{cls:sel?'sel':'',onTap:()=>{
-          liveEdges().forEach(g=>{ if(g.from_id===e.id&&g.type_id===doingTid())
+        rw.appendChild(entryChip(x,{cls:sel?'sel':'',onTap:()=>{
+          liveEdges().forEach(g=>{ if(g.from_id===e.id&&g.type_id===complementsTid())
             removeEdge(g.id); });
-          if(!sel) addEdge(e.id,x.id,doingTid());
-          drawDoing(); }})); }); };
-    drawDoing();
+          if(!sel) addEdge(e.id,x.id,complementsTid());
+          Modal.refresh(); }})); },
+      emptyMsg:'No activities yet.'});
 
-    body.appendChild(el('div','f-lbl','Object'));
-    const orow=el('div','chiprow'); body.appendChild(orow);
-    const ost=tabState('sheet-obj-'+e.id);
-    mapCloud(orow,ost,{
-      selected:()=>new Set(outAll(e.id,objectTid()).map(x=>x.id)),
-      onTap:(k,sel)=>{ if(sel) liveEdges().forEach(g=>{
-          if(g.from_id===e.id&&g.type_id===objectTid()&&g.to_id===k.id) removeEdge(g.id); });
-        else addEdge(e.id,k.id,objectTid()); }});
-
-    body.appendChild(el('div','f-lbl','Parent'));
+    body.appendChild(el('div','f-lbl','Project'));
     const pmode=el('div','chiprow'); body.appendChild(pmode);
     const prow=el('div','chiprow'); body.appendChild(prow);
-    const pst=tabState('sheet-par-'+e.id); pst.mode=pst.mode||'part of';
+    const pst=tabState('sheet-proj-'+e.id); pst.mode=pst.mode||'part of';
     const modeChip=el('button','chip sel',pst.mode);
     modeChip.title='Toggle link type: part of / of';
     modeChip.addEventListener('click',()=>{
       pst.mode=pst.mode==='part of'?'of':'part of';
       modeChip.textContent=pst.mode; });
     pmode.appendChild(modeChip);
-    mapCloud(prow,pst,{
-      selected:()=>new Set([...outAll(e.id,partofTid()),...outAll(e.id,ofTid())].map(x=>x.id)),
-      onTap:(k,sel)=>{
-        liveEdges().forEach(g=>{ if(g.from_id===e.id
-          &&[partofTid(),ofTid()].includes(g.type_id)) removeEdge(g.id); });
-        if(!sel) addEdge(e.id,k.id,pst.mode==='of'?ofTid():partofTid());
-        Modal.refresh(); }});
+    const setParent=k=>{
+      liveEdges().forEach(g=>{ if(g.from_id===e.id
+        &&[partofTid(),ofTid()].includes(g.type_id)) removeEdge(g.id); });
+      if(k) addEdge(e.id,k.id,pst.mode==='of'?ofTid():partofTid());
+      Modal.refresh(); };
+    expandableCloud(prow,pst,{
+      top:()=>childrenOf(anchor('project').id,[isaTid()]),
+      childTids:[partofTid(),ofTid()],
+      filter:list=>list.filter(x=>x.id!==e.id),
+      renderChip:(rw,k)=>{
+        const selSet=new Set([...outAll(e.id,partofTid()),
+                              ...outAll(e.id,ofTid())].map(x=>x.id));
+        const sel=selSet.has(k.id);
+        rw.appendChild(entryChip(k,{cls:sel?'sel':'',
+          onTap:()=>setParent(sel?null:k)})); },
+      extras:(rw,rootId)=>{
+        const add=el('button','chip add','＋ new…');
+        add.addEventListener('click',()=>{
+          const under=rootId?getEntry(rootId):anchor('project');
+          const t=prompt('New entry under '+handle(under)+':');
+          if(t&&t.trim()){ const n=createEntry({title:t.trim()});
+            addEdge(n.id,under.id,rootId?partofTid():isaTid());
+            setParent(n); } });                    // mint AND select
+        rw.appendChild(add); },
+      emptyMsg:'No projects yet — ＋ to add.'});
 
     body.appendChild(el('div','f-lbl','Due'));
     const drow=el('div','chiprow'); body.appendChild(drow);
+    const wrappers=()=>backlinksOf(e.id)
+      .filter(x=>x.edge.type_id===objectTid());
     const drawDue=()=>{ drow.innerHTML='';
-      const g=liveEdges().find(x=>x.from_id===e.id
+      const ws=wrappers();
+      const subj=ws.length?ws[0].node:e;     // the due clause lives on the promise
+      const g=liveEdges().find(x=>x.from_id===subj.id
         &&x.type_id===dueTid()&&getEntry(x.to_id));
       const dueE=g?getEntry(g.to_id):null;
       const btn=el('button','chip'+(dueE?' sel':''),dueE?fmtDT(dueE.ts):'set due…');
@@ -2307,7 +2461,7 @@ function openTaskSheet(id){
       inp.addEventListener('change',()=>{ const iso=fromLocalInput(inp.value);
         if(!iso) return;
         if(dueE) updateEntry(dueE.id,{ts:iso});
-        else { const d=createEntry({ts:iso}); addEdge(e.id,d.id,dueTid()); }
+        else { const d=createEntry({ts:iso}); addEdge(subj.id,d.id,dueTid()); }
         drawDue(); });
       btn.appendChild(inp);
       btn.addEventListener('click',()=>{
@@ -2331,14 +2485,13 @@ function openTaskSheet(id){
       addEdge(w.id,verbByTitle(verbTitle).id,doingTid());
       addEdge(w.id,e.id,objectTid());
       if(person) addEdge(w.id,person.id,recipientTid());
-      const d=outOne(e.id,dueTid());
-      if(d) addEdge(w.id,d.id,dueTid());
+      const dg=liveEdges().find(x=>x.from_id===e.id
+        &&x.type_id===dueTid()&&getEntry(x.to_id));
+      if(dg){ addEdge(w.id,dg.to_id,dueTid()); removeEdge(dg.id); }
       toast(verbTitle+(person?' '+oblique(person):''));
       Modal.refresh(); };
     body.appendChild(el('div','f-lbl','Promised to'));
     const wrow=el('div','chiprow'); body.appendChild(wrow);
-    const wrappers=()=>backlinksOf(e.id)
-      .filter(x=>x.edge.type_id===objectTid());
     const drawPromise=()=>{ wrow.innerHTML='';
       const ws=wrappers();
       ws.forEach(x=>wrow.appendChild(entryChip(x.node,{cls:'sel',
@@ -2355,13 +2508,6 @@ function openTaskSheet(id){
           mintWrapper('Promised',p); } });
       wrow.appendChild(np); };
     drawPromise();
-
-    if(isGhost){
-      const done=el('button','bigbtn','✓ Done');
-      done.addEventListener('click',()=>{
-        const en=fulfillGhost(e.id,null);
-        Modal.closeAll(); });
-      body.appendChild(done); }
   });
 }
 // ==== SEC:APP/UI/EDIT_TASK (END) ====
