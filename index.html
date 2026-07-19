@@ -790,7 +790,7 @@ function outAll(id,tid){ return liveEdges().filter(x=>x.from_id===id&&x.type_id=
 // piece of its verb (Bins/8:45). Cycle- and depth-guarded.
 function handle(eOrId,seen){
   const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
-  seen=seen||new Set();
+  if(!(seen instanceof Set)) seen=new Set();   // callers may be Array.map, which passes the index here
   if(seen.has(e.id)||seen.size>6) return disp(e);
   seen.add(e.id);
   const of=outOne(e.id,ofTid());
@@ -809,7 +809,8 @@ function oblique(e){ return e.id===anchor('i').id?'me':handle(e); }
 // the phrase of its deed.
 function verbPhrase(eOrId,seen){
   const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
-  seen=seen||new Set(); if(seen.has(e.id)||seen.size>6) return handle(e);
+  if(!(seen instanceof Set)) seen=new Set();   // callers may be Array.map, which passes the index here
+  if(seen.has(e.id)||seen.size>6) return handle(e);
   seen.add(e.id);
   if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
     if(d) return verbPhrase(d,seen); }
@@ -1285,7 +1286,11 @@ UI.state={};                       // per-tab runtime state (drafts, expand sets
 function tabState(id){ return UI.state[id]||(UI.state[id]={}); }
 
 UI.rerender=function(){
-  renderRunbar(); renderTabbar();
+  // A throw in any one region must not blank the app: data states the
+  // renderers mishandle should degrade to an error note, not a dead
+  // page (the tab bar especially must survive so the user can move).
+  try{ renderRunbar(); }catch(err){ console.error('runbar render failed',err); }
+  try{ renderTabbar(); }catch(err){ console.error('tabbar render failed',err); }
   const v=$('#view'); v.innerHTML='';
   const RENDER={create:renderCreate,inbox:renderInbox,active:renderActive,
     explore:renderExplore,todo:renderTodo,views:renderViews,links:renderLinks,
@@ -1300,8 +1305,14 @@ UI.rerender=function(){
   if(!tab){ v.appendChild(el('div','empty','No tabs to show — open ⋯ to reset.')); return; }
   UI.tabId=tab.id;
   const fn=RENDER[tab.cls];
-  if(fn) fn(v,tab);
-  else v.appendChild(el('div','empty','This tab can\u2019t be shown.'));
+  try{
+    if(fn) fn(v,tab);
+    else v.appendChild(el('div','empty','This tab can\u2019t be shown.'));
+  }catch(err){
+    console.error('tab render failed',err);
+    v.innerHTML='';
+    v.appendChild(el('div','empty','This tab hit an error while rendering — your data is safe. ('+(err&&err.message||err)+')'));
+  }
 };
 const EDITOR_TAB_CLASSES=['views','links','tabs'];   // live in the ⋯ tab now
 function renderTabbar(){
