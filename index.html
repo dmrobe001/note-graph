@@ -1794,10 +1794,14 @@ function renderActive(v,tab){
     top:verbCloudItems,
     childTids:cloudTids(),
     // A sole-incoming-complement chip already embodies its pairing;
-    // it only earns a ＋ when it has other children beyond that one.
+    // suppress its ＋ only when expansion would add nothing — the one
+    // complement is its only child AND that complement is childless.
+    // (kitchen is a room complements tidied: tidied must stay
+    // expandable so the path can continue through room to kitchen.)
     noExpand:x=>{ const S=soleIncomingComp(x); if(!S) return false;
       const kids=childrenOf(x.id,cloudTids());
-      return kids.length===1&&kids[0].id===S.id; },
+      return kids.length===1&&kids[0].id===S.id
+        &&!childrenOf(S.id,cloudTids()).length; },
     filter:searchFilter,
     onExpand:(x,rootId,meta)=>(rootId&&compEdge(x.id,rootId))?rootId:meta,
     renderChip:(rw,x,rootId)=>{
