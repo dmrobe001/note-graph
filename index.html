@@ -189,11 +189,16 @@ input:focus,textarea:focus{border-color:var(--accent-dim)}
 .trow .tbtn.end{color:var(--accent);border-color:var(--accent-dim);font-size:12px;width:auto;padding:0 12px}
 .flatrow{display:block;width:100%;text-align:left;padding:6px 4px;border-radius:10px}
 .flatrow:active{background:var(--surface)}
-.flatrow .line{display:flex;gap:8px;align-items:baseline}
-/* Flat rows wrap onto as many lines as the sentence needs. */
-.flatrow .nm{font-size:15px;white-space:normal;overflow-wrap:anywhere;min-width:0}
-/* Every flat row leads with its time (or start–end range) inline. */
-.flatrow .rng{font-family:var(--mono);font-size:11px;color:var(--faint);flex-shrink:0}
+/* Inline flow: the time lead and sentence run together, so wrapped
+   lines continue UNDER the timestamp at the row's left edge. */
+.flatrow .line{display:block}
+.flatrow .nm{display:inline;font-size:15px;white-space:normal;overflow-wrap:anywhere}
+.flatrow .rng{display:inline;font-family:var(--mono);font-size:11px;color:var(--faint);margin-right:8px}
+/* Day stamps: one per day carrying entries, centered date with rules
+   filling the sides; the current day is bold and "Today, "-prefixed. */
+.daystamp{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin:10px 0 4px}
+.daystamp::before,.daystamp::after{content:'';flex:1;border-top:1px solid var(--line)}
+.daystamp.today{font-weight:700}
 /* ==== SEC:STYLE/TREE (END) ==== */
 
 /* ==== SEC:STYLE/CHIPS (BEGIN) ==== */
@@ -311,14 +316,18 @@ const $  = s => document.querySelector(s);
 const el = (tag, cls, txt) => { const e=document.createElement(tag);
   if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e; };
 const nowISO = () => new Date().toISOString();
-// Timestamp display: today -> "14:05"; within the last week ->
-// "tue 14:05"; older or future -> "tue 7 jul 14:05"; and outside the
-// current year the two-digit year follows the month: "tue 7 jul 25 14:05".
+// Times print 12-hour everywhere: "1:45a", "12:05p". fmtDTParts adds
+// a date part for non-today moments — "tue 1:45a"; older or future ->
+// "tue 7 jul 1:45a"; outside the current year the two-digit year
+// follows the month: "tue 7 jul 25 1:45a".
 // fmtDTParts returns {date, time}; date is '' when the moment is today.
+function fmtT12(iso){ const d=new Date(iso); if(isNaN(d)) return '';
+  const h=d.getHours();
+  return (h%12||12)+':'+String(d.getMinutes()).padStart(2,'0')+(h<12?'a':'p'); }
 function fmtDTParts(iso){
   const d=new Date(iso); if(isNaN(d)) return {date:'',time:''};
   const now=new Date(), p=n=>String(n).padStart(2,'0');
-  const time=p(d.getHours())+':'+p(d.getMinutes());
+  const time=fmtT12(d);
   const day0=x=>new Date(x.getFullYear(),x.getMonth(),x.getDate());
   const ago=(day0(now)-day0(d))/86400000;          // whole days in the past
   if(ago===0) return {date:'',time};
@@ -510,6 +519,7 @@ function partofTid(){ return relTid('seed-t-partof','part of'); }
 function ofTid(){ return relTid('seed-t-of','of'); }
 function isTid(){ return relTid('seed-t-is','is'); }
 function complementsTid(){ return relTid('seed-t-complements','complements'); }
+function typeofTid(){ return relTid('seed-t-typeof','is a type of'); }
 function byTid(){ return relTid('seed-t-by','by'); }
 function doingTid(){ return relTid('seed-t-doing','doing'); }
 function objectTid(){ return relTid('seed-t-object','object'); }
@@ -583,6 +593,7 @@ function seed(){
   const isa=mkType('seed-t-isa','is a');
   mkType('seed-t-partof','part of');   mkType('seed-t-of','of');
   mkType('seed-t-is','is');            mkType('seed-t-complements','complements');
+  mkType('seed-t-typeof','is a type of');
   mkType('seed-t-by','by');            mkType('seed-t-doing','doing');
   mkType('seed-t-object','object');    mkType('seed-t-recipient','recipient');
   mkType('seed-t-beneficiary','beneficiary'); mkType('seed-t-complement','complement');
@@ -654,7 +665,8 @@ function ensureSeedTabs(){
 const SEED_LINK_TYPES=[
   {id:'seed-t-isa',name:'is a'},{id:'seed-t-partof',name:'part of'},
   {id:'seed-t-of',name:'of'},{id:'seed-t-is',name:'is'},
-  {id:'seed-t-complements',name:'complements'},{id:'seed-t-by',name:'by'},
+  {id:'seed-t-complements',name:'complements'},{id:'seed-t-typeof',name:'is a type of'},
+  {id:'seed-t-by',name:'by'},
   {id:'seed-t-doing',name:'doing'},{id:'seed-t-object',name:'object'},
   {id:'seed-t-recipient',name:'recipient'},{id:'seed-t-beneficiary',name:'beneficiary'},
   {id:'seed-t-complement',name:'complement'},{id:'seed-t-with',name:'with'},
@@ -785,19 +797,24 @@ function outOne(id,tid){ const g=liveEdges().find(x=>x.from_id===id
 function outAll(id,tid){ return liveEdges().filter(x=>x.from_id===id&&x.type_id===tid)
   .map(x=>getEntry(x.to_id)).filter(Boolean); }
 // HANDLES (design §6). Base is disp(); an `of` link prepends its
-// target's handle with a bare space (ASR Treasurer, recursively); a
-// bare entry (no title, no body) with a doing link is named as a
-// piece of its verb (Bins/8:45). Cycle- and depth-guarded.
+// target's handle with a bare space (ASR Treasurer, recursively); an
+// entry with exactly ONE `is a type of` link appends its target's
+// handle the same way — the mirror of `of` — so "domestic" with
+// is a type of -> Activity names itself "domestic activity"; a bare
+// entry (no title, no body) with a doing link is named as a piece of
+// its verb (Bins/8:45). Cycle- and depth-guarded.
 function handle(eOrId,seen){
   const e=typeof eOrId==='string'?getEntry(eOrId):eOrId; if(!e) return '?';
   if(!(seen instanceof Set)) seen=new Set();   // callers may be Array.map, which passes the index here
   if(seen.has(e.id)||seen.size>6) return disp(e);
   seen.add(e.id);
+  const tos=outAll(e.id,typeofTid());
+  const base=(e.title&&tos.length===1)?disp(e)+' '+handle(tos[0],seen):disp(e);
   const of=outOne(e.id,ofTid());
-  if(of) return handle(of,seen)+' '+disp(e);
+  if(of) return handle(of,seen)+' '+base;
   if(!e.title&&!e.body){ const d=outOne(e.id,doingTid());
     if(d) return handle(d,seen)+'/'+disp(e); }
-  return disp(e); }
+  return base; }
 // Oblique first person: the I entry reads "me" everywhere except the
 // subject slot (where it is suppressed — absent `by` IS first person).
 function oblique(e){ return e.id===anchor('i').id?'me':handle(e); }
@@ -1680,22 +1697,26 @@ function renderInbox(v,tab){
 // and a begin entry that is simply never marked Active (an
 // inauguration, a years-long role) clocks nowhere — legitimately
 // unended. Rows are running clocks wearing their verb phrase; tapping
-// one opens the interval sheet. The CHIP CLOUD below offers only
-// direct `is a` members of Activity, plus everything `is` -> To-Do or
-// `is` -> Noted. A chip with incoming `part of` / `of` links grows a
-// ＋ that dismisses the cloud and repopulates it with everything
-// linking to that chip via part of / of / is a / complements (⬑
-// climbs back). SELECTION: if the expansion path used to reach the
-// tapped chip crossed a `complements` link, or the tapped entry has
+// one opens the interval sheet. The CHIP CLOUD starts at the verb
+// taxonomy: only entries with a direct `is a` or `is a type of` link
+// to Activity. Any chip with incoming is a type of / is / is a /
+// complements / part of / of links grows a ＋ that repopulates the
+// cloud with everything linking to it by those types (⬑ climbs back),
+// recursively — so a category like "domestic activity" opens to its
+// verbs, and a status like To-Do (once given is a type of -> Activity)
+// opens to its ghosts via their `is` links. SELECTION: if the
+// expansion path crossed a `complements` link, or the tapped entry has
 // exactly one outgoing `complements` link, the interval is minted
-// doing -> that complements target with object -> the tapped entry;
-// otherwise doing -> the tapped entry. A chip whose entry has exactly
-// one INCOMING `complements` link wears its source's title inline,
-// needs no ＋, and taps as that source (doing -> the chip's entry,
-// object -> the source). Typing filters the current level; the
-// ancestor match walks complements / of / is a upward, so "asr" keeps
-// ASR/…/Invoices. ＋ by the field mints a titled `is a` member of
-// Activity and starts it at once.
+// doing -> that complements target with object -> the tapped entry.
+// Failing both, a tapped entry that carries a To-Do or Noted status is
+// still a THING, not a verb — it becomes object -> of a generic
+// "worked on" activity (found by title, minted `is a` Activity on
+// first use). Otherwise doing -> the tapped entry plain. A chip whose
+// entry has exactly one INCOMING `complements` link wears its source's
+// title inline, taps as that pairing, and only grows a ＋ if it has
+// other children to show. Typing filters the current level; the
+// ancestor match walks the same six link types upward. ＋ by the field
+// mints a titled `is a` member of Activity and starts it at once.
 function concludeInterval(e){
   let en=endEntryOf(e.id);
   if(en) updateEntry(en.id,{ts:nowISO()});
@@ -1704,12 +1725,15 @@ function concludeInterval(e){
   toast('Ended · '+fmtDur(Date.now()-new Date(e.ts)));
   return en; }
 function verbCloudItems(){
-  const seen=new Set(), out=[];
-  const add=e=>{ if(e&&!seen.has(e.id)){ seen.add(e.id); out.push(e); } };
-  childrenOf(anchor('activity').id,[isaTid()]).forEach(add);
-  statusLinked('todo').forEach(add);
-  statusLinked('noted').forEach(add);
-  return out; }
+  return childrenOf(anchor('activity').id,[isaTid(),typeofTid()]); }
+// The generic verb for tasks started without one; found by title so
+// the user can rename or restructure it, minted on first use.
+function workedOn(){
+  let w=DB.entries.find(t=>!t.deleted&&t.title
+    &&t.title.toLowerCase()==='worked on');
+  if(!w){ w=createEntry({title:'worked on'});
+    addEdge(w.id,anchor('activity').id,isaTid()); }
+  return w; }
 function renderActive(v,tab){
   const st=tabState(tab.id);
   const active=activeIntervals();
@@ -1749,8 +1773,10 @@ function renderActive(v,tab){
   const soleOutgoingComp=x=>{ const es=liveEdges().filter(g=>g.type_id===cm
       &&g.from_id===x.id&&getEntry(g.to_id));
     return es.length===1?getEntry(es[0].to_id):null; };
+  const cloudTids=()=>[typeofTid(),isTid(),isaTid(),
+    complementsTid(),partofTid(),ofTid()];
   const up=id=>liveEdges().filter(g=>g.from_id===id
-      &&[complementsTid(),ofTid(),isaTid(),partofTid()].includes(g.type_id))
+      &&cloudTids().includes(g.type_id))
     .map(g=>g.to_id);
   const searchFilter=items=>{
     const q=(st.q||'').trim(); if(!q) return items;
@@ -1766,9 +1792,12 @@ function renderActive(v,tab){
     toast('Started · '+(comp?handle(comp)+' ':'')+handle(a)); UI.rerender(); };
   const drawCloud=expandableCloud(cloud,st.cloud,{
     top:verbCloudItems,
-    childTids:[partofTid(),ofTid(),isaTid(),complementsTid()],
-    expandTids:[partofTid(),ofTid()],
-    noExpand:x=>!!soleIncomingComp(x),
+    childTids:cloudTids(),
+    // A sole-incoming-complement chip already embodies its pairing;
+    // it only earns a ＋ when it has other children beyond that one.
+    noExpand:x=>{ const S=soleIncomingComp(x); if(!S) return false;
+      const kids=childrenOf(x.id,cloudTids());
+      return kids.length===1&&kids[0].id===S.id; },
     filter:searchFilter,
     onExpand:(x,rootId,meta)=>(rootId&&compEdge(x.id,rootId))?rootId:meta,
     renderChip:(rw,x,rootId)=>{
@@ -1781,6 +1810,9 @@ function renderActive(v,tab){
         if(rootId&&compEdge(x.id,rootId)) comp=getEntry(rootId);
         if(!comp&&st.cloud.meta) comp=getEntry(st.cloud.meta);
         if(!comp) comp=soleOutgoingComp(x);
+        // A verbless task is still a thing: object of "worked on".
+        if(!comp&&(hasStatus(x.id,'todo')||hasStatus(x.id,'noted')))
+          comp=workedOn();
         start(x,comp); });
       rw.appendChild(c); },
     emptyMsg:()=>((st.q||'').trim()?'No matches.':'No verbs yet — type one and ＋.')});
@@ -1831,17 +1863,19 @@ function renderExplore(v,tab){
       // terminated, then the sentence read off its outgoing clauses —
       //   [Status:] [subject] verb-phrase [recipients] [objects]
       //   [complements] — then the link clauses, joined by "and" —
-      //   [is X] [is a X] [is part of X] [of X] [complements X]
-      //   [with …] [at …|from X to Y] [for …] [due <t>] [fulfills …]
+      //   [is X] [is a X] [is a type of X] [is part of X] [of X]
+      //   [complements X] [with …] [at …|from X to Y] [for …]
+      //   [due <t>] [fulfills …]
       //   : title [/ end title] . body [/ end body]
       // Bodies come after every title and link clause, with a '.'
       // closing the sentence before them. A titled entry with no
-      // `doing` link and no Status state is led by "Articulated that".
-      // ABSORPTION: exactly one `complements` and/or one `of` link is
+      // `doing` link and no Status state is led by "Articulated".
+      // ABSORPTION: exactly one `complements` and/or `of` link is
       // absorbed into the printed title — complemented phrase, then
-      // origin handle, then the title, bare-space-joined ("To-Do:
-      // Submitted basket weaving grant") — and prints no clause of its
-      // own; plural links print as clauses as usual.
+      // origin handle, then the title, bare-space-joined — and prints
+      // no clause of its own; a single `is a type of` link SUFFIXES
+      // the title with its target's handle ("domestic activity") but
+      // still prints its clause; plural links print as clauses.
       // An entry with an `until` target that is NOT Active is an
       // interval pair: lead becomes the begin–end range, the end
       // entry's own row is suppressed, from/to are the begin and end
@@ -1859,15 +1893,32 @@ function renderExplore(v,tab){
       if(!list.length){ box.appendChild(el('div','empty','No matches.')); return; }
       const first=s=>(s||'').split('\n')[0];
       const iId=anchor('i').id;
+      // Day stamps: rows carry only their time; the day lives in a
+      // ruled, centered stamp above each day's group. Newest-first
+      // order puts the stamp at the day's END; days with no entries
+      // get no line; the current day is bold, "Today, "-prefixed.
+      const DOWF=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const MONF=['January','February','March','April','May','June','July',
+                  'August','September','October','November','December'];
+      const dayKey=ts=>{ const d=new Date(ts);
+        return d.getFullYear()+'-'+d.getMonth()+'-'+d.getDate(); };
+      const todayKey=dayKey(new Date());
+      let lastDay=null;
       list.slice(0,300).forEach(e=>{
+        const dk=dayKey(e.ts);
+        if(dk!==lastDay){ lastDay=dk;
+          const d=new Date(e.ts);
+          const label=(dk===todayKey?'Today, ':'')+DOWF[d.getDay()]+' '
+            +d.getDate()+' '+MONF[d.getMonth()]+' '+d.getFullYear();
+          box.appendChild(el('div','daystamp'+(dk===todayKey?' today':''),label)); }
         const endE=beg.get(e.id);
         const r=el('button','flatrow');
         const line=el('div','line');
         let lead;
         if(endE){
           const sameDay=new Date(e.ts).toDateString()===new Date(endE.ts).toDateString();
-          lead=fmtDT(e.ts)+'–'+(sameDay?fmtDTParts(endE.ts).time:fmtDT(endE.ts));
-        } else lead=fmtDT(e.ts);
+          lead=fmtT12(e.ts)+'–'+(sameDay?fmtT12(endE.ts):fmtDT(endE.ts));
+        } else lead=fmtT12(e.ts);
         const hdr=[];
         const subj=outOne(e.id,byTid());
         if(subj&&subj.id!==iId) hdr.push(handle(subj));
@@ -1877,11 +1928,14 @@ function renderExplore(v,tab){
         // printing as a clause.
         const compLinks=outAll(e.id,complementsTid());
         const ofLinks=outAll(e.id,ofTid());
+        const typeofLinks=outAll(e.id,typeofTid());
         const oneComp=compLinks.length===1?compLinks[0]:null;
         const oneOf=ofLinks.length===1?ofLinks[0]:null;
+        const oneTof=(e.title&&typeofLinks.length===1)?typeofLinks[0]:null;
         const titleText=[oneComp?verbPhrase(oneComp):'',
                          oneOf?handle(oneOf):'',
-                         e.title||''].filter(Boolean).join(' ');
+                         e.title||'',
+                         oneTof?handle(oneTof):''].filter(Boolean).join(' ');
         // A verbless entry is its own subject noun: the title leads
         // ("Annual Report is part of ASR/Treasurer"); with a verb, the
         // title is trailing commentary after ':'.
@@ -1902,6 +1956,7 @@ function renderExplore(v,tab){
         isLinks.filter(t=>!stats.includes(t))
           .forEach(t=>clauses.push('is '+handle(t)));
         outAll(e.id,isaTid()).forEach(t=>clauses.push('is a '+handle(t)));
+        typeofLinks.forEach(t=>clauses.push('is a type of '+handle(t)));
         outAll(e.id,partofTid()).forEach(t=>clauses.push('is part of '+handle(t)));
         if(!oneOf) ofLinks.forEach(t=>clauses.push('of '+handle(t)));
         if(!oneComp) compLinks.forEach(t=>clauses.push('complements '+handle(t)));
@@ -1932,8 +1987,11 @@ function renderExplore(v,tab){
         // Bodies trail everything; a '.' closes the sentence first.
         const bodies=[first(e.body),endE?first(endE.body):''].filter(Boolean);
         if(bodies.length) txt=(txt?txt+'. ':'')+bodies.join(' / ');
-        if(stats.length) txt=stats.map(handle).join(', ')+(txt?': '+txt:'');
-        else if(e.title&&!verb) txt='Articulated that '+txt;
+        // The prefix wants the status's bare name: statuses may carry
+        // taxonomy links (To-Do as a type of Activity) that handle()
+        // would verbosely append.
+        if(stats.length) txt=stats.map(disp).join(', ')+(txt?': '+txt:'');
+        else if(e.title&&!verb) txt='Articulated '+txt;
         line.appendChild(el('span','rng',lead));
         line.appendChild(el('span','nm',txt));
         r.appendChild(line);
@@ -2358,9 +2416,9 @@ function pickType(onPick,opts={}){
 //   Title — inline; formalizing a jot usually starts with rewording.
 //   Status — `is` chips over the Status lexicon with scoped
 //   exclusivity (setIs); tapping the selected one clears it.
-//   Complements — `is a` members of Activity (exclusive), expandable
-//   only along `is a` links: declares the task's verb via
-//   `complements`, after which the row reads verb-first.
+//   Complements — direct `is a` / `is a type of` members of Activity
+//   (exclusive), expandable along those same links: declares the
+//   task's verb via `complements`.
 //   Project — `is a` members of Project, expandable along `part of` /
 //   `of` links, exclusive by gesture with a [part of|of] mode toggle:
 //   selecting replaces the item's existing part-of/of links; `of`
@@ -2406,8 +2464,8 @@ function openTaskSheet(id){
     const vrow=el('div','chiprow'); body.appendChild(vrow);
     const cst=tabState('sheet-comp-'+e.id);
     expandableCloud(vrow,cst,{
-      top:()=>childrenOf(anchor('activity').id,[isaTid()]),
-      childTids:[isaTid()],
+      top:()=>childrenOf(anchor('activity').id,[isaTid(),typeofTid()]),
+      childTids:[isaTid(),typeofTid()],
       filter:list=>list.filter(x=>x.id!==e.id),
       renderChip:(rw,x)=>{
         const cur=outOne(e.id,complementsTid());
